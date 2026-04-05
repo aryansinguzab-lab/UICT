@@ -1,0 +1,3485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>UIICT Campus Navigator – Nakawa, Kampala</title>
+
+<!-- ══ PWA: Manifest ══ -->
+<link rel="manifest" href="manifest.json">
+
+<!-- ══ PWA: Theme & Status Bar ══ -->
+<meta name="theme-color" content="#0a0f1e">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="UIICT Nav">
+
+<!-- ══ PWA: Apple Touch Icons (fallback for iOS) ══ -->
+<link rel="apple-touch-icon" sizes="152x152" href="icons/icon-152.png">
+<link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png">
+
+<!-- ══ SEO / Share ══ -->
+<meta name="description" content="Interactive campus map and wayfinding for UIICT — Uganda Institute of Information and Communications Technology, Nakawa, Kampala.">
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<!-- ══ Firebase (shared live activities) ══ -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, query, where, getDocs, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  /* ── YOUR FIREBASE CONFIG ───────────────────────────────────────
+     Replace these values with your own project from console.firebase.google.com
+     (Free Spark plan is enough — Firestore in test mode)
+     ─────────────────────────────────────────────────────────────── */
+  const firebaseConfig = {
+    apiKey:            "AIzaSyCEmvIzZb-cHUhKlM9gJsqTDtqnVcDZpko",
+    authDomain:        "uict-navigator.firebaseapp.com",
+    databaseURL:       "https://uict-navigator-default-rtdb.firebaseio.com",
+    projectId:         "uict-navigator",
+    storageBucket:     "uict-navigator.firebasestorage.app",
+    messagingSenderId: "377991332369",
+    appId:             "1:377991332369:web:a2d435e8dbd38fa726a7b0",
+    measurementId:     "G-GEPFJW49LV"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+  const COL = collection(db, 'uiict_activities');
+
+  /* ── Expose helpers to global scope so the rest of the app can call them ── */
+
+  // Save a new activity (returns promise)
+  window._fbSaveActivity = async function(activity) {
+    // Remove any existing activity for this building first
+    const q = query(COL, where('buildingId', '==', activity.buildingId));
+    const snap = await getDocs(q);
+    snap.forEach(d => deleteDoc(doc(db, 'uiict_activities', d.id)));
+    // Add new
+    await addDoc(COL, { ...activity, createdAt: serverTimestamp() });
+  };
+
+  // Delete all activities (admin clear)
+  window._fbClearAll = async function() {
+    const snap = await getDocs(COL);
+    snap.forEach(d => deleteDoc(doc(db, 'uiict_activities', d.id)));
+  };
+
+  // Real-time listener — fires instantly on any change for all users
+  onSnapshot(COL, (snap) => {
+    const now = Date.now();
+    const live = [];
+    snap.forEach(d => {
+      const a = d.data();
+      a._docId = d.id;
+      if (a.endTs > now) live.push(a);
+      else deleteDoc(doc(db, 'uiict_activities', d.id)); // auto-clean expired
+    });
+    // Push to the main app
+    if (window._onActivitiesUpdate) window._onActivitiesUpdate(live);
+  });
+
+  window._fbReady = true;
+  console.log('[Firebase] Firestore connected — real-time activity sync active');
+
+  // Show connected status in UI
+  window.addEventListener('load', () => {
+    const badge = document.getElementById('fb-status');
+    if (badge) {
+      badge.textContent = '🟢 Live Sync Active';
+      badge.style.color = '#22c55e';
+    }
+  });
+</script>
+<style>
+  :root {
+    --ink:    #0a0f1e;
+    --yellow: #f5c800;
+    --green:  #006b3f;
+    --red:    #d90429;
+    --muted:  #64748b;
+    --border: #dde1ea;
+    --surface:#ffffff;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;font-family:'Outfit',sans-serif;background:#f2f4f8;color:var(--ink);overflow:hidden;}
+  #outer{display:flex;flex-direction:column;height:100vh;}
+  #app{display:flex;flex:1;min-height:0;height:100%;}
+  #sidebar{width:370px;min-width:310px;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);z-index:999;overflow:hidden;box-shadow:4px 0 24px rgba(0,0,0,0.06);}
+  #map-wrap{flex:1;position:relative;min-width:0;overflow:hidden;background:#0a0f1e;}
+  #map{width:100%;height:100%;}
+
+  /* HEADER */
+  #header{flex-shrink:0;background:var(--ink);}
+  .hstripe{height:6px;background:linear-gradient(90deg,#000 33%,var(--yellow) 33%,var(--yellow) 66%,var(--red) 66%);}
+  .hbody{padding:14px 18px 12px;}
+  .hlogo{display:flex;align-items:center;gap:10px;}
+  .lcircle{width:40px;height:40px;border-radius:50%;background:var(--yellow);display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;box-shadow:0 0 0 3px rgba(245,200,0,0.25);}
+  .htxt h1{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.02rem;color:white;letter-spacing:-0.3px;}
+  .htxt p{font-size:0.67rem;color:rgba(255,255,255,0.42);margin-top:1px;}
+  .hsub{margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:20px;font-size:0.62rem;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;}
+  .bg-g{background:rgba(0,107,63,0.22);color:#00c470;}
+  .bg-y{background:rgba(245,200,0,0.15);color:var(--yellow);}
+  .bg-r{background:rgba(217,4,41,0.18);color:#ff6b81;}
+
+  /* SCROLLER */
+  #scroller{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px;}
+  #scroller::-webkit-scrollbar{width:3px;}
+  #scroller::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+
+  /* LOCATE */
+  #locate-btn{width:100%;padding:11px 14px;border:none;border-radius:10px;background:var(--ink);color:white;cursor:pointer;font-family:'Outfit',sans-serif;font-size:0.84rem;font-weight:500;display:flex;align-items:center;gap:9px;transition:background 0.2s,transform 0.1s;}
+  #locate-btn:hover{background:#1a2340;transform:translateY(-1px);}
+  #loc-pulse{width:10px;height:10px;border-radius:50%;background:#64748b;flex-shrink:0;transition:background 0.3s;}
+  #loc-pulse.active{background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,0.25);animation:pulse 1.5s infinite;}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(34,197,94,0.25)}50%{box-shadow:0 0 0 8px rgba(34,197,94,0.1)}}
+  #loc-status{font-size:0.7rem;color:var(--muted);margin-top:5px;padding-left:2px;}
+  #loc-status.ok{color:#22c55e;}
+  #loc-status.err{color:var(--red);}
+  .sep{height:1px;background:var(--border);}
+  .sec-label{font-size:0.67rem;font-weight:600;letter-spacing:0.8px;text-transform:uppercase;color:var(--muted);}
+
+  /* INPUTS */
+  .field{display:flex;flex-direction:column;gap:5px;}
+  .input-row{position:relative;}
+  .dot-label{display:flex;align-items:center;gap:6px;}
+  .pip{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+  .pip.start{background:#f5c800;}
+  .pip.end{background:var(--red);}
+  .dot-label label{font-size:0.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;}
+  input[type=text]{width:100%;padding:10px 36px 10px 12px;border:1.5px solid var(--border);border-radius:9px;font-family:'Outfit',sans-serif;font-size:0.87rem;color:var(--ink);background:#fafbfd;outline:none;transition:border-color 0.2s,background 0.2s;}
+  input[type=text]:focus{border-color:var(--green);background:white;}
+  .x-btn{position:absolute;right:9px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.1rem;line-height:1;}
+  .use-loc-link{font-size:0.68rem;color:var(--green);background:none;border:none;cursor:pointer;font-family:'Outfit',sans-serif;text-decoration:underline;text-underline-offset:2px;margin-top:1px;text-align:left;}
+  /* hide old sug-box — now using full-screen overlay */
+  .sug-box{display:none!important;}
+
+  /* ── FULL-SCREEN SEARCH OVERLAY (Google Maps style) ── */
+  #search-overlay{
+    display:none;position:fixed;inset:0;z-index:8000;
+    background:rgba(10,15,30,0.55);backdrop-filter:blur(3px);
+    animation:overlayIn 0.18s ease;
+  }
+  #search-overlay.open{display:flex;flex-direction:column;}
+  @keyframes overlayIn{from{opacity:0}to{opacity:1}}
+
+  #search-panel{
+    background:white;width:100%;max-width:560px;margin:0 auto;
+    display:flex;flex-direction:column;
+    max-height:100vh;box-shadow:0 12px 48px rgba(0,0,0,0.25);
+    animation:panelDown 0.22s cubic-bezier(0.34,1.2,0.64,1);
+  }
+  @keyframes panelDown{from{transform:translateY(-18px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+  #search-bar{
+    display:flex;align-items:center;gap:10px;
+    padding:14px 16px;border-bottom:1.5px solid var(--border);
+    background:white;position:sticky;top:0;z-index:1;
+  }
+  #search-bar .sov-back{
+    background:none;border:none;cursor:pointer;
+    font-size:1.3rem;color:var(--muted);padding:4px;
+    display:flex;align-items:center;flex-shrink:0;
+    transition:color 0.15s;
+  }
+  #search-bar .sov-back:hover{color:var(--ink);}
+  #search-bar .sov-field-wrap{flex:1;position:relative;}
+  #search-bar .sov-pip{
+    position:absolute;left:10px;top:50%;transform:translateY(-50%);
+    width:10px;height:10px;border-radius:50%;flex-shrink:0;pointer-events:none;
+  }
+  #search-bar .sov-pip.start{background:#f5c800;}
+  #search-bar .sov-pip.end{background:var(--red);}
+  #search-bar .sov-input{
+    width:100%;padding:10px 32px 10px 28px;
+    border:1.5px solid var(--green);border-radius:9px;
+    font-family:'Outfit',sans-serif;font-size:0.9rem;color:var(--ink);
+    background:#fafbfd;outline:none;
+  }
+  #search-bar .sov-clear{
+    position:absolute;right:8px;top:50%;transform:translateY(-50%);
+    background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.1rem;line-height:1;
+  }
+  #search-hint{
+    padding:10px 18px 4px;font-size:0.68rem;font-weight:700;
+    letter-spacing:0.7px;text-transform:uppercase;color:var(--muted);
+  }
+  #search-list{flex:1;overflow-y:auto;}
+  #search-list::-webkit-scrollbar{width:3px;}
+  #search-list::-webkit-scrollbar-thumb{background:var(--border);}
+
+  .sug-item{
+    padding:13px 18px;cursor:pointer;font-size:0.85rem;
+    display:flex;align-items:center;gap:12px;
+    border-bottom:1px solid #f1f3f7;transition:background 0.1s;
+  }
+  .sug-item:last-child{border:none;}
+  .sug-item:hover,.sug-item:active{background:#f2f4f8;}
+  .si-icon{
+    width:36px;height:36px;border-radius:10px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:1.1rem;flex-shrink:0;background:#f2f4f8;
+  }
+  .si-body{flex:1;min-width:0;}
+  .si-name{font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .si-sub{font-size:0.7rem;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .si-alias{
+    display:inline-block;margin-top:3px;padding:1px 7px;border-radius:10px;
+    font-size:0.62rem;font-weight:600;background:#fef3c7;color:#92400e;
+    border:1px solid #fde68a;
+  }
+  .si-arrow{color:#cbd5e1;font-size:0.85rem;flex-shrink:0;}
+
+  /* BUTTONS */
+  #swap-btn{background:none;border:1.5px solid var(--border);border-radius:8px;padding:5px 10px;cursor:pointer;font-size:0.75rem;color:var(--muted);font-family:'Outfit',sans-serif;transition:all 0.2s;align-self:flex-start;}
+  #swap-btn:hover{border-color:var(--green);color:var(--green);}
+  #nav-btn{width:100%;padding:13px;border:none;border-radius:10px;background:var(--green);color:white;cursor:pointer;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:0.92rem;display:flex;align-items:center;justify-content:center;gap:8px;transition:background 0.2s,transform 0.1s;}
+  #nav-btn:hover{background:#005432;transform:translateY(-1px);}
+  #clear-btn{width:100%;padding:9px;background:none;border:1.5px solid #fca5a5;border-radius:9px;color:var(--red);font-size:0.8rem;font-family:'Outfit',sans-serif;cursor:pointer;display:none;transition:all 0.2s;}
+  #clear-btn:hover{background:var(--red);color:white;}
+
+  /* RESULT */
+  #result-card{background:#f0fff7;border:1.5px solid #a7f3d0;border-radius:12px;padding:14px;}
+  .stats-row{display:flex;gap:8px;margin-bottom:14px;}
+  .stat{flex:1;background:white;border-radius:8px;padding:10px 6px;text-align:center;border:1px solid #d1fae5;}
+  .stat-v{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.1rem;color:var(--green);}
+  .stat-l{font-size:0.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:2px;}
+  .steps-title{font-size:0.68rem;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:var(--muted);margin-bottom:8px;}
+  .step-row{display:flex;align-items:flex-start;gap:9px;padding:7px 0;position:relative;}
+  .step-row:not(:last-child)::after{content:'';position:absolute;left:10px;top:26px;width:2px;height:calc(100% - 8px);background:var(--green);opacity:0.2;}
+  .step-num{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.62rem;font-weight:700;color:white;flex-shrink:0;margin-top:1px;background:var(--green);}
+  .step-num.s{background:var(--yellow);color:#000;}
+  .step-num.e{background:var(--red);}
+  .step-body{font-size:0.8rem;line-height:1.4;}
+  .step-body strong{font-weight:600;}
+  .seg{font-size:0.68rem;color:var(--muted);margin-top:1px;}
+
+  /* BINFO */
+  #binfo{background:#fffbea;border:1.5px solid #fde68a;border-radius:12px;padding:14px;}
+  #binfo .bname{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:0.96rem;margin-bottom:3px;}
+  #binfo .bdesc{font-size:0.76rem;color:var(--muted);}
+  #binfo .btags{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px;}
+  .btag{padding:3px 9px;background:white;border:1px solid #fde68a;border-radius:20px;font-size:0.7rem;cursor:pointer;transition:background 0.15s;}
+  .btag:hover{background:#fde68a;}
+  #err-msg{background:#fff1f2;border:1.5px solid #fecdd3;border-radius:9px;padding:10px 13px;font-size:0.8rem;color:var(--red);display:none;}
+
+  /* MAP */
+  #fab{position:absolute;top:14px;right:14px;width:36px;height:36px;border-radius:8px;background:var(--ink);color:white;border:none;font-size:1rem;cursor:pointer;z-index:800;box-shadow:0 4px 14px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;transition:transform 0.2s;}
+  #fab:hover{transform:scale(1.1);}
+  #map-tip{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:rgba(10,15,30,0.82);color:white;padding:7px 18px;border-radius:20px;font-size:0.75rem;z-index:500;pointer-events:none;backdrop-filter:blur(8px);white-space:nowrap;display:none;}
+  .leaflet-popup-content-wrapper{border-radius:12px!important;font-family:'Outfit',sans-serif;box-shadow:0 6px 24px rgba(0,0,0,0.14)!important;} .leaflet-popup-content-wrapper,.leaflet-popup-tip-container,.leaflet-tooltip{transform:rotate(-90deg)!important;transform-origin:center center!important;}
+  .leaflet-popup-content{margin:11px 15px!important;font-size:0.82rem;}
+  .pw-title{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:0.95rem;margin-bottom:3px;}
+  .pw-desc{font-size:0.74rem;color:#64748b;}
+  .pw-offices{font-size:0.71rem;color:#94a3b8;margin-top:4px;}
+  /* Layer control styling */
+  .leaflet-control-layers {
+    border-radius: 8px !important;
+    border: none !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25) !important;
+    background: rgba(10,15,30,0.88) !important;
+    backdrop-filter: blur(8px);
+    padding: 5px 9px !important;
+    margin-top: 0 !important;
+  }
+  /* Anchor layer control top-right below the FAB */
+  .leaflet-top.leaflet-right {
+    top: 58px !important;
+    right: 14px !important;
+  }
+  .leaflet-control-layers-toggle { display: none !important; }
+  .leaflet-control-layers-list { display: block !important; }
+  .leaflet-control-layers label {
+    color: rgba(255,255,255,0.85) !important;
+    font-family: 'Outfit', sans-serif !important;
+    font-size: 0.69rem !important;
+    font-weight: 500 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    margin: 2px 0 !important;
+    cursor: pointer !important;
+  }
+  .leaflet-control-layers-separator { border-color: rgba(255,255,255,0.15) !important; }
+  .path-tip { background: rgba(10,15,30,0.82) !important; color: rgba(255,255,255,0.9) !important;
+    border: none !important; border-radius: 5px !important; font-size: 0.68rem !important;
+    font-family: 'Outfit', sans-serif !important; padding: 3px 8px !important; box-shadow: 0 2px 6px rgba(0,0,0,0.2) !important; }
+  .path-tip::before { display: none !important; }
+
+  /* ══ MARQUEE KEY BAR ══ */
+  #marquee-bar{position:fixed;bottom:0;left:0;right:0;height:36px;background:var(--ink);border-top:3px solid var(--yellow);display:flex;align-items:center;overflow:hidden;z-index:1000;}
+  #mq-label{flex-shrink:0;padding:0 14px;font-family:'Space Grotesk',sans-serif;font-size:0.64rem;font-weight:700;color:var(--yellow);letter-spacing:2px;text-transform:uppercase;border-right:1px solid rgba(255,255,255,0.12);white-space:nowrap;}
+  #mq-track{flex:1;overflow:hidden;position:relative;}
+  #mq-track::before{content:'';position:absolute;left:0;top:0;bottom:0;width:24px;background:linear-gradient(to right,var(--ink),transparent);z-index:1;pointer-events:none;}
+  #mq-track::after{content:'';position:absolute;right:0;top:0;bottom:0;width:24px;background:linear-gradient(to left,var(--ink),transparent);z-index:1;pointer-events:none;}
+  #mq-inner{display:inline-flex;align-items:center;white-space:nowrap;animation:mScroll 36s linear infinite;}
+  #mq-inner:hover{animation-play-state:paused;}
+  @keyframes mScroll{from{transform:translateX(0);}to{transform:translateX(-50%);}}
+  .mq-item{display:inline-flex;align-items:center;gap:7px;padding:0 18px;font-size:0.72rem;color:rgba(255,255,255,0.78);font-family:'Outfit',sans-serif;border-right:1px solid rgba(255,255,255,0.07);white-space:nowrap;}
+  .mq-item:hover{color:white;}
+  .mq-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+  .mq-sep{display:inline-block;padding:0 16px;color:var(--yellow);font-size:0.7rem;opacity:0.55;}
+
+  /* TOAST */
+  #toast{position:fixed;bottom:48px;left:50%;transform:translateX(-50%) translateY(60px);background:var(--ink);color:white;padding:9px 20px;border-radius:8px;font-size:0.8rem;z-index:9999;transition:transform 0.3s;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);}
+  #toast.show{transform:translateX(-50%) translateY(0);}
+
+  @media(max-width:680px){
+    #app{flex-direction:column;}
+    #sidebar{width:100%;min-width:unset;height:52vh;border-right:none;border-bottom:1px solid var(--border);}
+    #map-wrap{flex:1;}
+    #marquee-bar{height:30px;}
+    .mq-item{font-size:0.64rem;padding:0 12px;}
+  }
+
+  /* ── HELP BUTTON ────────────────────────────────────────────── */
+  #help-btn {
+    flex-shrink: 0;
+    margin-left: 6px;
+    margin-right: 10px;
+    padding: 3px 11px;
+    background: rgba(245,200,0,0.13);
+    border: 1.5px solid rgba(245,200,0,0.45);
+    border-radius: 20px;
+    color: var(--yellow);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.63rem;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s, transform 0.15s;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  #help-btn:hover {
+    background: rgba(245,200,0,0.26);
+    border-color: var(--yellow);
+    transform: translateY(-1px);
+  }
+
+  /* ── HELP MODAL OVERLAY ─────────────────────────────────────── */
+  #help-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(5,9,20,0.82);
+    z-index: 9000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(6px);
+    padding: 16px;
+  }
+  #help-overlay.open { display: flex; }
+
+  #help-modal {
+    background: #0d1528;
+    border: 1.5px solid rgba(245,200,0,0.22);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 720px;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+    overflow: hidden;
+    animation: modalIn 0.28s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  @keyframes modalIn {
+    from { opacity: 0; transform: scale(0.92) translateY(18px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+  }
+
+  /* Modal header */
+  #help-modal-head {
+    flex-shrink: 0;
+    background: var(--ink);
+    padding: 18px 22px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  #help-modal-head .hm-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 1rem;
+    color: white;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  #help-modal-head .hm-title span.pill {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    background: rgba(245,200,0,0.15);
+    color: var(--yellow);
+    border: 1px solid rgba(245,200,0,0.3);
+    border-radius: 20px;
+    padding: 2px 9px;
+  }
+  #help-close {
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    color: rgba(255,255,255,0.6);
+    font-size: 1.1rem;
+    width: 32px; height: 32px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s, color 0.15s;
+  }
+  #help-close:hover { background: rgba(217,4,41,0.25); color: #ff6b81; }
+
+  /* Tab nav */
+  #help-tabs {
+    flex-shrink: 0;
+    display: flex;
+    gap: 0;
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    padding: 0 20px;
+  }
+  .htab {
+    padding: 10px 16px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: rgba(255,255,255,0.42);
+    cursor: pointer;
+    border-bottom: 2.5px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    display: flex; align-items: center; gap: 6px;
+    margin-bottom: -1px;
+  }
+  .htab:hover { color: rgba(255,255,255,0.72); }
+  .htab.active { color: var(--yellow); border-bottom-color: var(--yellow); }
+
+  /* Modal body */
+  #help-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 22px 24px;
+    color: rgba(255,255,255,0.82);
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.84rem;
+    line-height: 1.65;
+  }
+  #help-body::-webkit-scrollbar { width: 4px; }
+  #help-body::-webkit-scrollbar-thumb { background: rgba(245,200,0,0.25); border-radius: 4px; }
+
+  .htab-panel { display: none; }
+  .htab-panel.active { display: block; }
+
+  /* Help typography */
+  .help-h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 0.88rem;
+    color: var(--yellow);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin: 22px 0 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .help-h2:first-child { margin-top: 0; }
+  .help-h2::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: rgba(245,200,0,0.15);
+  }
+
+  .help-step {
+    display: flex;
+    gap: 13px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    margin-bottom: 8px;
+    transition: background 0.15s;
+  }
+  .help-step:hover { background: rgba(255,255,255,0.055); }
+  .hs-num {
+    flex-shrink: 0;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: rgba(0,107,63,0.35);
+    border: 1.5px solid rgba(0,196,112,0.4);
+    color: #00c470;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 0.72rem;
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 1px;
+  }
+  .hs-body strong {
+    color: white;
+    font-weight: 600;
+    font-size: 0.86rem;
+  }
+  .hs-body p { margin-top: 2px; color: rgba(255,255,255,0.58); font-size: 0.79rem; }
+
+  /* Strengths / weaknesses cards */
+  .sw-grid { display: flex; flex-direction: column; gap: 7px; }
+  .sw-card {
+    display: flex; gap: 11px; align-items: flex-start;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 0.81rem;
+  }
+  .sw-card.strength {
+    background: rgba(0,107,63,0.14);
+    border: 1px solid rgba(0,196,112,0.22);
+    color: rgba(255,255,255,0.78);
+  }
+  .sw-card.weakness {
+    background: rgba(217,4,41,0.10);
+    border: 1px solid rgba(217,4,41,0.22);
+    color: rgba(255,255,255,0.78);
+  }
+  .sw-icon { font-size: 1rem; flex-shrink: 0; margin-top: 1px; }
+  .sw-text strong { color: white; font-weight: 600; display: block; margin-bottom: 2px; font-size: 0.83rem; }
+  .sw-text span { color: rgba(255,255,255,0.52); font-size: 0.76rem; }
+
+  /* Quick ref chip grid */
+  .qr-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .qr-chip {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 12px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 9px;
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.72);
+    min-width: 0;
+  }
+  .qr-chip .qc-key {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    color: var(--yellow);
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  @media(max-width:600px) {
+    #help-modal { max-height: 95vh; border-radius: 12px; }
+    #help-body { padding: 16px 16px; }
+    .htab { padding: 9px 11px; font-size: 0.7rem; }
+  }
+
+  /* ── SIDEBAR COLLAPSE ─────────────────────────── */
+  #sidebar { transition: width 0.32s cubic-bezier(0.4,0,0.2,1), flex 0.32s cubic-bezier(0.4,0,0.2,1); }
+  #sidebar.collapsed { width: 0 !important; min-width: 0 !important; flex: 0 0 0 !important; border-right: none; overflow: hidden; padding: 0 !important; }
+
+  /* ── HAMBURGER TOGGLE ─────────────────────────── */
+  #menu-toggle {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    z-index: 1001;
+    width: 42px;
+    height: 42px;
+    border-radius: 10px;
+    background: var(--ink);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    transition: background 0.2s, transform 0.15s;
+    flex-shrink: 0;
+  }
+  #menu-toggle:hover { background: #1a2340; transform: scale(1.06); }
+  #menu-toggle .bar {
+    width: 20px;
+    height: 2px;
+    background: white;
+    border-radius: 2px;
+    transition: transform 0.25s, opacity 0.2s;
+  }
+  /* X state when sidebar is open */
+  #menu-toggle.open .bar:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  #menu-toggle.open .bar:nth-child(2) { opacity: 0; transform: scaleX(0); }
+  #menu-toggle.open .bar:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* ── FLOOR TABS ───────────────────────────────── */
+  .floor-tabs { display:flex; gap:5px; flex-wrap:wrap; margin:8px 0 6px; }
+  .floor-tab {
+    padding:4px 11px; border-radius:20px; font-size:0.68rem; font-weight:600;
+    border:1.5px solid var(--border); background:#f8fafc; color:var(--muted);
+    cursor:pointer; transition:all 0.15s; white-space:nowrap;
+  }
+  .floor-tab.active { background:var(--green); color:white; border-color:var(--green); }
+  .floor-tab:hover:not(.active) { border-color:var(--green); color:var(--green); }
+  .floor-rooms { display:flex; flex-wrap:wrap; gap:5px; margin-top:4px; }
+  .floor-panel { display:none; }
+  .floor-panel.active { display:block; }
+  .bi-type-badge {
+    display:inline-flex; align-items:center; gap:4px;
+    padding:2px 8px; border-radius:12px; font-size:0.62rem; font-weight:600;
+    text-transform:uppercase; letter-spacing:0.5px;
+    background:#f0fdf4; color:var(--green); border:1px solid #a7f3d0;
+    margin-bottom:6px;
+  }
+
+  /* ── RECENT PLACES ────────────────────────────── */
+  .recent-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 9px; cursor: pointer;
+    transition: background 0.14s; border: 1px solid transparent;
+  }
+  .recent-item:hover { background: #f2f4f8; border-color: var(--border); }
+  .recent-icon { font-size: 1.1rem; flex-shrink: 0; width: 28px; text-align: center; }
+  .recent-info { flex: 1; min-width: 0; }
+  .recent-name { font-size: 0.82rem; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recent-sub  { font-size: 0.67rem; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recent-time { font-size: 0.62rem; color: #94a3b8; flex-shrink: 0; }
+  #clear-recent-btn { background: none; border: none; font-size: 0.67rem; color: var(--muted); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; padding: 0; font-family: 'Outfit', sans-serif; }
+  #clear-recent-btn:hover { color: var(--red); }
+  #recent-empty { font-size: 0.77rem; color: var(--muted); text-align: center; padding: 12px 0; }
+  .sec-header {
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: pointer; user-select: none;
+    padding: 7px 10px; margin: 0 -10px;
+    border-radius: 8px;
+    transition: background 0.15s;
+  }
+  .sec-header:hover { background: #f2f4f8; }
+  .sec-header .sec-title {
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.8px;
+    text-transform: uppercase; color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .sec-header .sec-chevron {
+    font-size: 0.65rem; color: var(--muted);
+    transition: transform 0.25s;
+    flex-shrink: 0;
+  }
+  .sec-header.collapsed .sec-chevron { transform: rotate(-90deg); }
+  .sec-body { overflow: hidden; transition: max-height 0.3s ease, opacity 0.25s; }
+  .sec-body.collapsed { max-height: 0 !important; opacity: 0; pointer-events: none; }
+
+  /* ── TRAVEL MODE TOGGLE ──────────────────────────────────── */
+  .travel-mode-wrap {
+    display: flex;
+    gap: 7px;
+    background: #f2f4f8;
+    border-radius: 10px;
+    padding: 5px;
+    border: 1.5px solid var(--border);
+  }
+  .travel-mode-wrap .tm-btn {
+    flex: 1;
+    padding: 8px 6px;
+    border: none;
+    border-radius: 7px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    background: transparent;
+    color: var(--muted);
+    transition: all 0.18s;
+  }
+  .travel-mode-wrap .tm-btn:hover:not(.active) {
+    background: rgba(255,255,255,0.7);
+    color: var(--ink);
+  }
+  .travel-mode-wrap .tm-btn.active.foot {
+    background: var(--green);
+    color: white;
+    box-shadow: 0 2px 8px rgba(0,107,63,0.28);
+  }
+  .travel-mode-wrap .tm-btn.active.vehicle {
+    background: #92400e;
+    color: white;
+    box-shadow: 0 2px 8px rgba(146,64,14,0.32);
+  }
+  .tm-label { font-size: 0.67rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+
+  /* ── FLOATING MAP CONTROLS (always visible, screen-independent) ── */
+  /* Zoom control — Leaflet's bottomright; lift above marquee bar */
+  .leaflet-bottom.leaflet-right {
+    bottom: 108px !important;
+    right: 14px !important;
+  }
+  .leaflet-control-zoom {
+    border: none !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35) !important;
+    border-radius: 10px !important;
+    overflow: hidden;
+  }
+  .leaflet-control-zoom a {
+    width: 36px !important;
+    height: 36px !important;
+    line-height: 36px !important;
+    font-size: 1.1rem !important;
+    background: #0a0f1e !important;
+    color: white !important;
+    border: none !important;
+    border-bottom: 1px solid rgba(255,255,255,0.1) !important;
+    transition: background 0.15s !important;
+  }
+  .leaflet-control-zoom a:last-child { border-bottom: none !important; }
+  .leaflet-control-zoom a:hover { background: #1a2340 !important; }
+
+  /* Calibration button — fixed, left side, above marquee */
+  #calib-btn {
+    position: fixed;
+    bottom: 88px;
+    left: 14px;
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    background: #1e3a5f;
+    color: white;
+    border: none;
+    font-size: 1rem;
+    cursor: pointer;
+    z-index: 100;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, transform 0.15s;
+  }
+  #calib-btn:hover { background: #2a4f80; transform: scale(1.08); }
+
+  /* Coord readout box — fixed, above marquee centre */
+  #coord-box {
+    display: none;
+    position: fixed;
+    bottom: 48px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(10,15,30,0.92);
+    color: #f5c800;
+    padding: 7px 16px;
+    border-radius: 20px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.78rem;
+    z-index: 1100;
+    pointer-events: none;
+    white-space: nowrap;
+    border: 1px solid rgba(245,200,0,0.3);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }
+
+  /* ── LIVE ACTIVITY SYSTEM ─────────────────────────────────── */
+  #activity-fab {
+    position: fixed;
+    bottom: 138px;
+    left: 14px;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: #d90429;
+    color: white;
+    border: none;
+    font-size: 1.1rem;
+    cursor: pointer;
+    z-index: 800;
+    box-shadow: 0 4px 14px rgba(217,4,41,0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s, background 0.2s;
+  }
+  #activity-fab:hover { transform: scale(1.1); background: #b3001a; }
+  #activity-fab .fab-pulse {
+    position: absolute;
+    inset: -4px;
+    border-radius: 13px;
+    border: 2px solid rgba(217,4,41,0.5);
+    animation: fabRing 1.8s ease-out infinite;
+  }
+  @keyframes fabRing {
+    0%   { opacity: 0.7; transform: scale(1); }
+    100% { opacity: 0;   transform: scale(1.5); }
+  }
+
+  /* Activity Modal Overlay */
+  #activity-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(5,9,20,0.85);
+    z-index: 9500;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(7px);
+    padding: 16px;
+  }
+  #activity-overlay.open { display: flex; }
+
+  #activity-modal {
+    background: #0d1528;
+    border: 1.5px solid rgba(217,4,41,0.35);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 480px;
+    max-height: 92vh;
+    overflow-y: auto;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.7);
+    animation: modalIn 0.28s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  #activity-modal::-webkit-scrollbar { width: 3px; }
+  #activity-modal::-webkit-scrollbar-thumb { background: rgba(217,4,41,0.3); border-radius: 3px; }
+
+  .am-head {
+    background: linear-gradient(135deg, #1a0008, #0d1528);
+    border-bottom: 1px solid rgba(217,4,41,0.25);
+    padding: 18px 20px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-radius: 16px 16px 0 0;
+  }
+  .am-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 0.98rem;
+    color: white;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .am-title .live-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #d90429;
+    box-shadow: 0 0 0 4px rgba(217,4,41,0.25);
+    animation: pulse 1.5s infinite;
+    flex-shrink: 0;
+  }
+  .am-close {
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    color: rgba(255,255,255,0.6);
+    font-size: 1.1rem;
+    width: 32px; height: 32px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s;
+  }
+  .am-close:hover { background: rgba(217,4,41,0.3); color: #ff6b81; }
+
+  .am-body {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .am-step {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .am-step-label {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: rgba(217,4,41,0.8);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .am-input {
+    width: 100%;
+    padding: 10px 13px;
+    border: 1.5px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.05);
+    color: white;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.87rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .am-input:focus { border-color: rgba(217,4,41,0.6); background: rgba(255,255,255,0.08); }
+  .am-input option { background: #0d1528; color: white; }
+
+  .am-time-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .am-time-field { display: flex; flex-direction: column; gap: 4px; }
+  .am-time-label { font-size: 0.68rem; color: rgba(255,255,255,0.45); font-weight: 600; }
+
+  /* Password field special style */
+  .am-pw-wrap { position: relative; }
+  .am-pw-wrap .am-input { padding-right: 38px; letter-spacing: 2px; }
+  .am-pw-eye {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: rgba(255,255,255,0.3);
+    cursor: pointer; font-size: 1rem;
+    transition: color 0.15s;
+  }
+  .am-pw-eye:hover { color: rgba(255,255,255,0.7); }
+
+  .am-error {
+    background: rgba(217,4,41,0.12);
+    border: 1px solid rgba(217,4,41,0.35);
+    border-radius: 7px;
+    padding: 9px 13px;
+    font-size: 0.78rem;
+    color: #ff6b81;
+    display: none;
+  }
+
+  .am-submit {
+    width: 100%;
+    padding: 13px;
+    border: none;
+    border-radius: 10px;
+    background: #d90429;
+    color: white;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 0.92rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: background 0.2s, transform 0.1s;
+  }
+  .am-submit:hover { background: #b3001a; transform: translateY(-1px); }
+
+  .am-clear-btn {
+    width: 100%;
+    padding: 9px;
+    background: none;
+    border: 1.5px solid rgba(255,255,255,0.12);
+    border-radius: 9px;
+    color: rgba(255,255,255,0.45);
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .am-clear-btn:hover { border-color: #ff6b81; color: #ff6b81; }
+
+  /* Live activity banner in building info */
+  .live-activity-banner {
+    background: linear-gradient(135deg, rgba(217,4,41,0.15), rgba(217,4,41,0.05));
+    border: 1.5px solid rgba(217,4,41,0.4);
+    border-radius: 10px;
+    padding: 11px 13px;
+    margin-top: 10px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .lab-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #d90429;
+    box-shadow: 0 0 0 4px rgba(217,4,41,0.2);
+    animation: pulse 1.5s infinite;
+    flex-shrink: 0;
+    margin-top: 3px;
+  }
+  .lab-body { flex: 1; min-width: 0; }
+  .lab-title {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 0.82rem;
+    color: #ff6b81;
+    margin-bottom: 2px;
+  }
+  .lab-desc {
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.75);
+    line-height: 1.4;
+  }
+  .lab-time {
+    font-size: 0.67rem;
+    color: rgba(255,255,255,0.4);
+    margin-top: 4px;
+  }
+
+  /* Active building glow overlay */
+  .activity-active-poly {
+    filter: drop-shadow(0 0 8px rgba(217,4,41,0.8));
+  }
+
+  /* Current activities list in modal */
+  .am-curr-list { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
+  .am-curr-item {
+    background: rgba(217,4,41,0.08);
+    border: 1px solid rgba(217,4,41,0.2);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.75);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .am-curr-item .ac-bldg {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    color: #ff6b81;
+    font-size: 0.82rem;
+  }
+  .am-curr-item .ac-time {
+    font-size: 0.66rem;
+    color: rgba(255,255,255,0.38);
+  }
+  .am-none { font-size: 0.77rem; color: rgba(255,255,255,0.3); text-align: center; padding: 8px 0; }
+
+</style>
+</head>
+<body>
+
+<div id="outer">
+  <div id="app" style="position:relative">
+    <!-- ══ SIDEBAR ══ -->
+    <div id="sidebar" class="collapsed">
+      <div id="header">
+        <div class="hstripe"></div>
+        <div class="hbody">
+          <div class="hlogo">
+            <div class="lcircle">🎓</div>
+            <div class="htxt">
+              <h1>UIICT Campus Navigator</h1>
+              <p>Uganda Institute of Information Communication and Technology · Nakawa, Kampala</p>
+            </div>
+          </div>
+          <div class="hsub">
+            
+          </div>
+        </div>
+      </div>
+
+      <div id="scroller">
+<div style="height=auto">
+        <!-- ▸ SECTION: LOCATE ──────────────────── -->
+        <div class="collapsible-section">
+          <div class="sec-header" onclick="toggleSection(this)">
+            <span class="sec-title">📡 My Location</span>
+            <span class="sec-chevron">▾</span>
+          </div>
+          <div class="sec-body" style="max-height:auto">
+            <div style="padding-top:6px">
+              <button id="locate-btn" onclick="locateMe()">
+                <div id="loc-pulse"></div>Detect My Location on Campus
+              </button>
+              <div id="loc-status">GPS not active — tap to find where you are</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sep"></div>
+
+        <!-- ▸ SECTION: DIRECTIONS ──────────────── -->
+        <div class="collapsible-section">
+          <div class="sec-header" onclick="toggleSection(this)">
+            <span class="sec-title">🧭 Click to Get Directions Or Hide</span>
+            <span class="sec-chevron">▾</span>
+          </div>
+          <div class="sec-body" style="max-height:auto">
+            <div style="padding-top:6px;display:flex;flex-direction:column;gap:10px">
+              <div class="field">
+                <div class="dot-label"><div class="pip start"></div><label>Starting Point</label></div>
+                <div class="input-row">
+                  <input type="text" id="from-in" placeholder="Building, block or gate…" autocomplete="off" readonly
+                    onclick="openSearchOverlay('from')" onfocus="openSearchOverlay('from')">
+                  <button class="x-btn" onclick="clrInput('from')">×</button>
+                </div>
+                <button class="use-loc-link" onclick="useMyLoc('from')">📍 Use my detected location</button>
+              </div>
+              <button id="swap-btn" onclick="swapFields()">⇅ Swap</button>
+              <div class="field">
+                <div class="dot-label"><div class="pip end"></div><label>Destination</label></div>
+                <div class="input-row">
+                  <input type="text" id="to-in" placeholder="Office, lab, hall, hostel…" autocomplete="off" readonly
+                    onclick="openSearchOverlay('to')" onfocus="openSearchOverlay('to')">
+                  <button class="x-btn" onclick="clrInput('to')">×</button>
+                </div>
+              </div>
+              <!-- Travel Mode -->
+              <div>
+                <div class="tm-label">Travel Mode</div>
+                <div class="travel-mode-wrap">
+                  <button class="tm-btn foot active" id="tm-foot" onclick="setTravelMode('foot')">
+                    🚶 On Foot
+                  </button>
+                  <button class="tm-btn vehicle" id="tm-vehicle" onclick="setTravelMode('vehicle')">
+                    🚗Official Route  
+                  </button>
+                </div>
+              </div>
+              <button id="nav-btn" onclick="navigate()">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M12 2L4.5 20.3l.5.7 7-3 7 3 .5-.7z"/></svg>
+                Get Directions
+              </button>
+              <button id="clear-btn" onclick="clearAll()">✕ Clear Route</button>
+              <div id="err-msg"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sep"></div>
+
+        <!-- ▸ SECTION: ROUTE RESULT ────────────── -->
+        <div class="collapsible-section" id="result-section" style="display:none">
+          <div class="sec-header" onclick="toggleSection(this)">
+            <span class="sec-title">📋 Route Result</span>
+            <span class="sec-chevron">▾</span>
+          </div>
+          <div class="sec-body" style="max-height:auto">
+            <div style="padding-top:6px">
+              <div id="result-card" style="display:block">
+                <div class="stats-row">
+                  <div class="stat"><div class="stat-v" id="r-dist">—</div><div class="stat-l">Distance</div></div>
+                  <div class="stat"><div class="stat-v" id="r-time">—</div><div class="stat-l" id="r-time-label">Walk Time</div></div>
+                  <div class="stat"><div class="stat-v" id="r-pts">—</div><div class="stat-l">Stops</div></div>
+                </div>
+                <div class="steps-title">Step-by-Step Directions</div>
+                <div id="steps"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ▸ SECTION: BUILDING INFO ────────────── -->
+        <div class="collapsible-section" id="binfo-section" style="display:none">
+          <div class="sec-header" onclick="toggleSection(this)">
+            <span class="sec-title">🏛 Building Info</span>
+            <span class="sec-chevron">▾</span>
+          </div>
+          <div class="sec-body" style="max-height:auto">
+            <div id="binfo" style="display:block;padding-top:6px">
+              <div class="bname" id="bi-name">—</div>
+              <div id="bi-type-badge" class="bi-type-badge" style="display:none"></div>
+              <div class="bdesc" id="bi-desc"></div>
+              <!-- floor tabs shown when building has floors -->
+              <div id="bi-floors-wrap" style="display:none">
+                <div class="floor-tabs" id="bi-floor-tabs"></div>
+                <div id="bi-floor-panels"></div>
+              </div>
+              <!-- flat office tags shown for single-floor buildings -->
+              <div class="btags" id="bi-offices"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ▸ SECTION: RECENT PLACES ────────────── -->
+        <div class="sep"></div>
+        <div class="collapsible-section" id="recent-section">
+          <div class="sec-header" onclick="toggleSection(this)">
+            <span class="sec-title">🕐 Recently Viewed</span>
+            <span class="sec-chevron">▾</span>
+          </div>
+          <div class="sec-body" style="max-height:auto">
+            <div style="padding-top:6px">
+              <div id="recent-list"><div id="recent-empty">No places viewed yet — tap any building on the map.</div></div>
+              <div style="text-align:right;margin-top:4px">
+                <button id="clear-recent-btn" onclick="clearRecent()">Clear history</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+</div>
+    <!-- ══ MAP ══ -->
+    <div id="map-wrap">
+      <div id="map"></div>
+      <div id="map-tip">📍 UIICT · New Port Bell Road, Nakawa · Between Nakawa Business Park &amp; MUBS · Same side of road</div>
+      <button id="fab" onclick="resetView()" title="Reset view">⊙</button>
+      <!-- Calibration toggle -->
+      <button id="calib-btn" onclick="toggleCalib()" title="Calibration mode">👀</button>
+      <!-- Coord readout — shown in calibration mode -->
+      <div id="coord-box">
+        Zoom In (+) to read properly 
+      </div>
+      <!-- Activity Update FAB -->
+      <button id="activity-fab" onclick="openActivityModal()" title="Update building activity">
+        <div class="fab-pulse"></div>
+        📋
+      </button>
+
+      <!-- Hamburger toggle -->
+      <button id="menu-toggle" onclick="toggleSidebar()" title="Toggle sidebar">
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+      </button>
+    </div>
+  </div>
+
+  <!-- ══ MARQUEE KEY — full width bottom ══ -->
+  <div id="marquee-bar">
+    <div id="mq-label">🗺 Key</div>
+    <div id="mq-track"><div id="mq-inner"></div></div>
+    <button id="help-btn" onclick="openHelp()">❓ Help</button>
+  </div>
+</div>
+
+<!-- ══ FULL-SCREEN SEARCH OVERLAY ══ -->
+<div id="search-overlay" onclick="sovBackdropClick(event)">
+  <div id="search-panel">
+    <div id="search-bar">
+      <button class="sov-back" onclick="closeSearchOverlay()" title="Back">&#8592;</button>
+      <div class="sov-field-wrap">
+        <div class="sov-pip" id="sov-pip"></div>
+        <input type="text" class="sov-input" id="sov-input"
+          placeholder="Search buildings, offices…"
+          oninput="sovOnInput(this.value)"
+          autocomplete="off" autocorrect="off" spellcheck="false">
+        <button class="sov-clear" id="sov-clear" onclick="sovClearInput()" style="display:none">×</button>
+      </div>
+    </div>
+    <div id="search-hint">Suggestions</div>
+    <div id="search-list"></div>
+  </div>
+</div>
+
+<!-- ══ LIVE ACTIVITY MODAL ══ -->
+<div id="activity-overlay" onclick="activityOverlayClose(event)">
+  <div id="activity-modal">
+    <div class="am-head">
+      <div class="am-title">
+        <div class="live-dot"></div>
+        Live Building Activity
+      </div>
+      <div id="fb-status" style="font-size:0.62rem;color:#64748b;font-family:'Outfit',sans-serif;font-weight:600;letter-spacing:0.3px">⏳ Connecting…</div>
+      <button class="am-close" onclick="closeActivityModal()">✕</button>
+    </div>
+    <div class="am-body">
+
+      <!-- Current activities -->
+      <div class="am-step">
+        <div class="am-step-label">📌 Currently Active</div>
+        <div id="am-curr-list" class="am-curr-list">
+          <div class="am-none">No activities running</div>
+        </div>
+      </div>
+
+      <!-- Password gate -->
+      <div class="am-step" id="am-auth-step">
+        <div class="am-step-label">🔐 Admin Access Required</div>
+        <div class="am-pw-wrap">
+          <input type="password" id="am-pw" class="am-input" placeholder="Enter admin password…" oninput="clearAmError()">
+          <button class="am-pw-eye" onclick="toggleAmPw()" id="am-pw-eye">👁</button>
+        </div>
+      </div>
+
+      <!-- Form (shown after auth) -->
+      <div id="am-form-area" style="display:none;flex-direction:column;gap:14px">
+
+        <div class="am-step">
+          <div class="am-step-label">🏛 Select Building</div>
+          <select id="am-building" class="am-input">
+            <option value="">— Choose a building —</option>
+          </select>
+        </div>
+
+        <div class="am-step">
+          <div class="am-step-label">📝 Activity / Event Description</div>
+          <input type="text" id="am-desc" class="am-input" placeholder="e.g. Lecture – Data Structures, Exam, Workshop…" maxlength="120">
+        </div>
+
+        <div class="am-step">
+          <div class="am-step-label">🕐 Time Window</div>
+          <div class="am-time-row">
+            <div class="am-time-field">
+              <div class="am-time-label">Start Time</div>
+              <input type="time" id="am-start" class="am-input">
+            </div>
+            <div class="am-time-field">
+              <div class="am-time-label">End Time</div>
+              <input type="time" id="am-end" class="am-input">
+            </div>
+          </div>
+        </div>
+
+        <div id="am-error" class="am-error"></div>
+
+        <button class="am-submit" onclick="submitActivity()">
+          <span>📌</span> Post Live Activity
+        </button>
+        <button class="am-clear-btn" onclick="clearAllActivities()">🗑 Clear All Activities</button>
+      </div>
+
+      <!-- Auth submit (shown before auth) -->
+      <div id="am-auth-btns">
+        <div id="am-error" class="am-error" style="margin-bottom:10px"></div>
+        <button class="am-submit" onclick="verifyAmPassword()">
+          🔓 Unlock Admin Panel
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══ HELP MODAL ══ -->
+<div id="help-overlay" onclick="overlayClose(event)">
+  <div id="help-modal">
+
+    <div id="help-modal-head">
+      <div class="hm-title">
+        🗺 UIICT Campus Navigator
+        <span class="pill">User Guide</span>
+      </div>
+      <button id="help-close" onclick="closeHelp()" title="Close">✕</button>
+    </div>
+
+    <div id="help-tabs">
+      <div class="htab active" onclick="switchTab('how')">User guide</div>
+      <div class="htab" onclick="switchTab('strengths')">Strengths</div>
+      <div class="htab" onclick="switchTab('weaknesses')">Disclaimer</div>
+      <div class="htab" onclick="switchTab('quickref')">Quick Ref</div>
+    </div>
+
+    <div id="help-body">
+
+      <!-- ── HOW TO USE ── -->
+      <div class="htab-panel active" id="tab-how">
+
+        <div class="help-h2">🧭 Navigation Controls</div>
+
+        <div class="help-step">
+          <div class="hs-num">1</div>
+          <div class="hs-body">
+            <strong>Open / Close the Sidebar</strong>
+            <p>Tap the ☰ hamburger button (top-left corner of the map). It becomes ✕ when open. The map fills the full screen when the sidebar is hidden.</p>
+          </div>
+        </div>
+
+        <div class="help-step">
+          <div class="hs-num">2</div>
+          <div class="hs-body">
+            <strong>Detect Your Location</strong>
+            <p>In the <em>📡 My Location</em> panel, tap <strong>"Detect My Location on Campus"</strong>. A green pulsing dot means GPS is active. A red message means location was denied or unavailable.</p>
+          </div>
+        </div>
+
+        <div class="help-step">
+          <div class="hs-num">3</div>
+          <div class="hs-body">
+            <strong>Enter Starting Point &amp; Destination</strong>
+            <p>In the <em>🧭 Get Directions</em> panel, type in the <strong>Starting Point</strong> field. A dropdown of matching buildings and offices appears — select one. Then fill in the <strong>Destination</strong> field the same way. Tap <strong>📍 Use my detected location</strong> to auto-fill your GPS position.</p>
+          </div>
+        </div>
+
+        <div class="help-step">
+          <div class="hs-num">4</div>
+          <div class="hs-body">
+            <strong>Swap Origin &amp; Destination</strong>
+            <p>Tap the <strong>⇅ Swap</strong> button between the two fields to reverse your route instantly.</p>
+          </div>
+        </div>
+
+        <div class="help-step">
+          <div class="hs-num">5</div>
+          <div class="hs-body">
+            <strong>Choose Travel Mode</strong>
+            <p>Select <strong>🚶 On Foot</strong> for pedestrian walking speed, or <strong>🚗 Official Route</strong> for vehicle speed. Time estimates adjust automatically.</p>
+          </div>
+        </div>
+
+        <div class="help-step">
+          <div class="hs-num">6</div>
+          <div class="hs-body">
+            <strong>Get Directions</strong>
+            <p>Press the green <strong>Get Directions</strong> button or hit <strong>Enter</strong>. The <em>📋 Route Result</em> panel shows total distance, estimated time, number of stops, and step-by-step directions.</p>
+          </div>
+        </div>
+
+        <div class="help-h2">🏛 Exploring the Campus</div>
+
+        <div class="help-step">
+          <div class="hs-num">7</div>
+          <div class="hs-body">
+            <strong>Tap Any Building on the Map</strong>
+            <p>Click a building polygon or marker to open the <em>🏛 Building Info</em> panel showing its name, type, description, and offices. Multi-floor buildings (e.g. Main Block) show <strong>Floor 1 / 2 / 3 tabs</strong> — tap a tab to see that floor's rooms.</p>
+          </div>
+        </div>
+
+        <div class="help-step">
+          <div class="hs-num">8</div>
+          <div class="hs-body">
+            <strong>Recently Viewed Places</strong>
+            <p>The <em>🕐 Recently Viewed</em> section tracks the last 6 buildings you tapped. Tap any entry to jump straight back to it. Use <strong>"Clear history"</strong> to reset.</p>
+          </div>
+        </div>
+
+        <div class="help-step">
+          <div class="hs-num">9</div>
+          <div class="hs-body">
+            <strong>Reset Map View</strong>
+            <p>Tap the <strong>⊙ button</strong> (top-right of the map) to snap back to the default campus overview at any time.</p>
+          </div>
+        </div>
+
+        <div class="help-step">
+          <div class="hs-num">10</div>
+          <div class="hs-body">
+            <strong>Switch Map Layers</strong>
+            <p>Use the layer control (top-right, below ⊙) to toggle between satellite and street map tile styles.</p>
+          </div>
+        </div>
+
+        <div class="help-h2">🗺 Bottom Key Bar</div>
+        <div class="help-step">
+          <div class="hs-num">11</div>
+          <div class="hs-body">
+            <strong>Scrolling Colour Key</strong>
+            <p>The animated bar at the bottom lists every building type with its colour dot. Hover over it to pause the scroll and read all categories.</p>
+          </div>
+        </div>
+
+        <div class="help-h2">🔴 Live Building Activities</div>
+        <div class="help-step">
+          <div class="hs-num">12</div>
+          <div class="hs-body">
+            <strong>Viewing Live Activities (Everyone)</strong>
+            <p>When an activity is posted for a building, a <strong>red pulsing dot</strong> appears over that building on the map. Tap the building to see a <strong>🔴 LIVE NOW</strong> banner inside the Building Info panel showing what is happening and the time window. Active events also scroll in the <strong>bottom key bar</strong> in pink.</p>
+          </div>
+        </div>
+        <div class="help-step">
+          <div class="hs-num">13</div>
+          <div class="hs-body">
+            <strong>Posting an Activity (Admins Only)</strong>
+            <p>Tap the <strong>📋 red button</strong> (floating, right side of map). The panel first shows any current live activities. To post or clear, enter the <strong>admin password</strong> and tap <em>Unlock Admin Panel</em>. Then select a building, type the activity description, set the <strong>Start Time</strong> and <strong>End Time</strong>, and tap <strong>Post Live Activity</strong>. The activity automatically disappears when the end time is reached — no manual removal needed.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── STRENGTHS ── -->
+      <div class="htab-panel" id="tab-strengths">
+        <div class="help-h2">✅ What This System Does Well</div>
+        <div class="sw-grid">
+          
+          <div class="sw-card strength"><div class="sw-icon">🔍</div><div class="sw-text"><strong>Fast Autocomplete Search</strong><span>Matches building names, short names, offices, and room names as you type — fuzzy and instant.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">🧮</div><div class="sw-text"><strong>Dijkstra Pathfinding</strong><span>Computes the true shortest path through the campus road/walkway graph — not just a straight line between two points.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">🚶🚗</div><div class="sw-text"><strong>Dual Travel Modes</strong><span>Walking vs. vehicle speed assumptions give realistic time estimates for both pedestrians and drivers.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">🏢</div><div class="sw-text"><strong>Floor-Level Room Detail</strong><span>Multi-storey buildings expose individual floors and specific rooms — not just "get to the building."</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">📡</div><div class="sw-text"><strong>GPS Integration</strong><span>"Use my detected location" as a start point makes the tool practical for first-time visitors who don't know the campus layout.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">🕐</div><div class="sw-text"><strong>Persistent Recent Places</strong><span>Frequently visited buildings are remembered across sessions via localStorage — one tap to revisit.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">📱</div><div class="sw-text"><strong>Responsive Mobile Layout</strong><span>Adapts to phone screens (≤680 px) by stacking the map below the sidebar panel.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">👀</div><div class="sw-text"><strong>Built-in Calibration Mode</strong><span>The 👀 button lets admins click any point on the map to read and copy its exact lat/lng — no GIS tools needed to update building positions.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">🔴</div><div class="sw-text"><strong>Live Building Activity Board</strong><span>Admins can post real-time activities (lectures, exams, events) to any building with a start and end time. Activities auto-expire and are visible to all users via map markers, the info panel, and the scrolling key bar.</span></div></div>
+        </div>
+      </div>
+
+      <!-- ── WEAKNESSES ── -->
+      <div class="htab-panel" id="tab-weaknesses">
+        <div class="help-h2">⚠️ Current Limitations to Be Aware Of</div>
+        <div class="sw-grid">
+          <div class="sw-card weakness"><div class="sw-icon">📍</div><div class="sw-text"><strong>Approximate Building Coordinates</strong><span>Positions are manually estimated. Routes may not match real paths precisely until each building is physically verified with GPS on campus.</span></div></div>
+          
+          <div class="sw-card weakness"><div class="sw-icon">🛰️</div><div class="sw-text"><strong>GPS Accuracy Limits</strong><span>Browser geolocation can be off by 10–50 metres, which may place you at the wrong building on a compact campus.</span></div></div>
+          <div class="sw-card weakness"><div class="sw-icon">🔒</div><div class="sw-text"><strong>Static Path Network</strong><span>Campus paths are hardcoded. Temporary closures, construction detours, or new shortcuts require a manual code edit to reflect.</span></div></div>
+          <div class="sw-card weakness"><div class="sw-icon">🚪</div><div class="sw-text"><strong>No Room-Level Routing</strong><span>You can route between buildings, not to a specific room number. Floor/room detail is informational only — the route ends at the building entrance.</span></div></div>
+           <div class="sw-card weakness"><div class="sw-icon">🚗</div><div class="sw-text"><strong>Vehicle routes confusion</strong><span>Some points are un-reachable by vehicles hence requires parking the vehicles on designated parking yards and  continue to the destination on foot</span></div></div>
+          
+          <div class="sw-card weakness"><div class="sw-icon">🌐</div><div class="sw-text"><strong>Map Tiles Require Internet</strong><span>Satellite and street map backgrounds need an internet connection. Without it, the map backdrop goes blank (though campus data still loads).</span></div></div>
+          <div class="sw-card weakness"><div class="sw-icon">🚗</div><div class="sw-text"><strong>Vehicle Routing Uses Same Graph as Walking</strong><span>The "Official Route" mode changes speed only — it does not enforce one-way roads or vehicle-only lanes if those aren't mapped in the data.</span></div></div>
+        </div>
+      </div>
+
+      <!-- ── QUICK REF ── -->
+      <div class="htab-panel" id="tab-quickref">
+        <div class="help-h2">⌨️ Keyboard &amp; Button Quick Reference</div>
+        <div class="qr-grid">
+          <div class="qr-chip"><span class="qc-key">Enter</span><span>Trigger Get Directions</span></div>
+          <div class="qr-chip"><span class="qc-key">☰ / ✕</span><span>Toggle sidebar open/close</span></div>
+          <div class="qr-chip"><span class="qc-key">⊙</span><span>Reset map to campus overview</span></div>
+          <div class="qr-chip"><span class="qc-key">⇅ Swap</span><span>Reverse origin &amp; destination</span></div>
+          <div class="qr-chip"><span class="qc-key">× (field)</span><span>Clear that input field</span></div>
+          <div class="qr-chip"><span class="qc-key">📍 Use loc</span><span>Fill GPS position as start</span></div>
+          <div class="qr-chip"><span class="qc-key">✕ Clear Route</span><span>Remove route from map</span></div>
+          <div class="qr-chip"><span class="qc-key">👀 Calib</span><span>Calibration / coordinate mode</span></div>
+          <div class="qr-chip"><span class="qc-key">Layer ctrl</span><span>Switch satellite / street tiles</span></div>
+          <div class="qr-chip"><span class="qc-key">Hover Key bar</span><span>Pause scrolling building-type key</span></div>
+          <div class="qr-chip"><span class="qc-key">📋 Live btn</span><span>Post / view building activities</span></div>
+          <div class="qr-chip"><span class="qc-key">👀 left btn</span><span>Calibration / coordinate mode</span></div>
+        </div>
+
+        <div class="help-h2">🏷️ Building Type Colour Key</div>
+        <div class="qr-grid">
+          <div class="qr-chip"><span style="width:11px;height:11px;border-radius:50%;background:#f5c800;flex-shrink:0;display:inline-block"></span><span>Gate / Entrance</span></div>
+          <div class="qr-chip"><span style="width:11px;height:11px;border-radius:50%;background:#3b82f6;flex-shrink:0;display:inline-block"></span><span>Academic / Lecture</span></div>
+          <div class="qr-chip"><span style="width:11px;height:11px;border-radius:50%;background:#006b3f;flex-shrink:0;display:inline-block"></span><span>Administration</span></div>
+          <div class="qr-chip"><span style="width:11px;height:11px;border-radius:50%;background:#8b5cf6;flex-shrink:0;display:inline-block"></span><span>Labs &amp; Tech Facilities</span></div>
+          <div class="qr-chip"><span style="width:11px;height:11px;border-radius:50%;background:#f97316;flex-shrink:0;display:inline-block"></span><span>Hostel / Accommodation</span></div>
+          <div class="qr-chip"><span style="width:11px;height:11px;border-radius:50%;background:#d90429;flex-shrink:0;display:inline-block"></span><span>Security</span></div>
+          <div class="qr-chip"><span style="width:11px;height:11px;border-radius:50%;background:#64748b;flex-shrink:0;display:inline-block"></span><span>Parking</span></div>
+          <div class="qr-chip"><span style="width:11px;height:11px;border-radius:50%;background:#0ea5e9;flex-shrink:0;display:inline-block"></span><span>Landmark / Junction</span></div>
+        </div>
+
+        <div class="help-h2">💡 Tips for Best Results</div>
+        <div class="sw-grid">
+          <div class="sw-card strength"><div class="sw-icon">💡</div><div class="sw-text"><strong>Type partial names</strong><span>Typing "lab" or "admin" is enough — the autocomplete will suggest all matching buildings and rooms.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">🗺️</div><div class="sw-text"><strong>Tap the map first</strong><span>Clicking a building on the map directly is often faster than typing — then use "Navigate here" from the info panel.</span></div></div>
+          <div class="sw-card strength"><div class="sw-icon">🔄</div><div class="sw-text"><strong>Collapse sections you don't need</strong><span>Each sidebar section has a ▾ toggle. Collapse sections like Recent Places to keep the Directions panel in view.</span></div></div>
+        </div>
+      </div>
+
+    </div><!-- /help-body -->
+  </div><!-- /help-modal -->
+</div><!-- /help-overlay -->
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   EDITABLE CAMPUS DATA
+   ─────────────────────────────────────────────────────────────
+   UIICT is at Plot 9–21 New Port Bell Road, Nakawa, Kampala.
+   Exact reference points confirmed:
+     • Opposite Capital Shoppers Nakawa  → 0.32645, 32.61507
+     • Next to MUBS                      → 0.32833, 32.61639
+     • Near Posta Uganda (Post Office)   → on same road corridor
+     • National Innovation ICT Hub       → inside UIICT campus
+
+   TO UPDATE BUILDING POSITIONS:
+   Open Google Maps → walk to each building → long-press → copy lat/lng
+   ═══════════════════════════════════════════════════════════════ */
+
+const CAMPUS = {
+  name: "UIICT – Nakawa, Kampala",
+  address: "New Port Bell Road, Nakawa — at Posta Uganda, between Nakawa Business Park (west) and MUBS (east)",
+  // ✅ GPS VERIFIED (OpenStreetMap confirmed):
+  //   Posta Uganda Nakawa   = 0.32739, 32.61426  ← UIICT is right here
+  //   URA Kampala East      ≈ 0.32739, 32.61306  (120m west)
+  //   National ICT Hub      ≈ 0.32510, 32.61426  (inside campus)
+  //   Nakawa Business Park  ≈ 0.32836, 32.61155  (west along same road)
+  //   MUBS                  ≈ 0.32830, 32.61640  (east along same road)
+  center: [0.32868, 32.61495],
+  zoom: 17,
+  walkingSpeedKmh: 4.5,
+  vehicleSpeedKmh: 20
+};
+
+/* ── BUILDINGS ─────────────────────────────────────────────────
+   Anchored at Posta Uganda Nakawa: 0.32739, 32.61426
+   Campus spreads SOUTH from New Port Bell Road (lat decreases southward).
+   Road is at ~lat 0.3275. Buildings go south to ~lat 0.3265.
+   Longitude range: ~32.6138 (west) to ~32.6155 (east).
+   Update each lat/lng once you walk the campus with Google Maps open.
+   ─────────────────────────────────────────────────────────────── */
+const BUILDINGS = [
+  /* ── GATES & ENTRANCES ──────────────────────────────────── */
+  { id:"main_gate",    name:"Main Gate (New Port Bell Road)", shortName:"Main Gate",   type:"gate",
+    aliases:["entrance","gate","front gate","main entrance","port bell road","entry","main door"],
+    lat:0.32693, lng:32.61439,
+    description:"Primary entrance on Port Bell Road — centre of campus.", offices:[] },
+  { id:"small_gate",    name:"Small Gate (East Entrance)",     shortName:"Small Gate",  type:"gate",
+    aliases:["east gate","back gate","MUBS gate","side gate","small entrance","east entrance"],
+    lat:0.32678, lng:32.61491,
+    description:"Small east entrance near MUBS along Port Bell Road.", offices:[] },
+
+  /* ── LANDMARKS ──────────────────────────────────────────── */
+  { id:"central_junction",   name:"central junction1",              shortName:"central junction1",  type:"landmark",
+    aliases:["main junction","central junction","main road junction","campus junction"],
+    lat:0.32753, lng:32.61454,
+    description:"central junction1 — key navigation point inside the campus.", offices:[] },
+  
+  /* ── RECEPTION / POST OFFICE ─────────────────────────────── */
+  { id:"reception",    name:"Reception / Post Office",        shortName:"Reception",   type:"admin",
+    aliases:["reception","post office","visitor","front desk","mail","parcel","reception desk","postal","information desk"],
+    lat:0.32738, lng:32.61416,
+    description:"Combined campus reception and post office — first point of contact for visitors.",
+    offices:["Receptionist Desk","Post Office Counter","Visitor Registration","Mail Collection","Parcel Services"] },
+
+  /* ── SECURITY ────────────────────────────────────────────── */
+  { id:"security_main",name:"Main Gate Security Post",        shortName:"Security Post",type:"security",
+    aliases:["guard","guards","security","checkpoint","gate security","gatehouse","visitor registration"],
+    lat:0.32718, lng:32.61440,
+    description:"Security checkpoint at the Main Gate — guards, visitor registration and access control.",
+    offices:["Security Office","Visitor Register","Lost & Found"] },
+
+  /* ── PARKING ─────────────────────────────────────────────── */
+  { id:"parking_west", name:"Main Gate Parking Area",         shortName:"Main Gate Parking",type:"parking",
+    aliases:["parking","car park","west parking","visitor parking","park"],
+    lat:0.32720, lng:32.61418,
+    description:"Staff and visitor parking near the Main Gate on the west side.", offices:["Parking Attendant Bay"] },
+  { id:"parking_east", name:"Admin Block Parking Area",       shortName:"Admin Block Parking",type:"parking",
+    aliases:["east parking","staff parking","small gate parking","car park east"],
+    lat:0.32712, lng:32.61497,
+    description:"Staff and visitor parking near the Admin Block on the east side.", offices:["Parking Attendant Bay"] },
+
+  /* ── PRINTING PLACE ──────────────────────────────────────── */
+  { id:"printing_place",name:"Printing Place",               shortName:"Printing Place",type:"store",
+    aliases:["print","photocopy","photocopying","binding","copy center","cyber","printing shop","printer"],
+    lat:0.32697, lng:32.61480,
+    description:"Printing and photocopy services located near the Admin Block Parking and Small Gate.",
+    offices:["Printing Counter","Photocopy Services","Binding Services"] },
+
+  /* ── ADMINISTRATION BLOCK ────────────────────────────────── */
+  { id:"admin_block",  name:"Administration Block",           shortName:"Admin Block", type:"admin",
+    aliases:["admin","administration","principal","registry","accounts","finance","library","board room","PRO","deputy principal","bursar"],
+    lat:0.32706, lng:32.61525,
+    description:"Main administrative hub of UIICT — houses the principal, finance, library and board room.",
+    offices:["Principal's Office","Secretary to Principal","Library","Accounts Office","Board Room","PRO / Secretary Deputy Principal"] },
+
+  /* ── MAIN BLOCK (3 FLOORS) ───────────────────────────────── */
+  { id:"main_block",   name:"Main Block",                     shortName:"Main Block",  type:"academic",
+    aliases:["main building","labs","computer lab","lecture room","telecon","optic fibre","electronics lab","cisco","ITU","AVR","virtual reality","pearson vue","ODeL","e-learning","multimedia","seminar"],
+    lat:0.32730, lng:32.61470,
+    description:"Central academic block with three floors housing labs, lecture rooms and specialist facilities.",
+    offices:[], // floors used instead — see below
+    floors:[
+      { name:"Floor 1", rooms:["Telecon / Opticfibre Lab","Electronics Lab","Pearson Vue Test Center","ITS Office / Server Room","Augmented Virtual Reality Lab","Electrical Lab"] },
+      { name:"Floor 2", rooms:["Sub Auto Teles Lecture Room","Open Distance E-Learning(ODeL)","Store","Seminar Room 1"] },
+      { name:"Floor 3", rooms:["Multimedia Lab","Seminar Room","Senior Seminar Room","Computer Lab 1","Computer Lab 2","Computer Lab 3","ITU / Cisco Lab"] }
+    ]},
+
+
+  /* ── SUPPORT SERVICES BLOCK ──────────────────────────────── */
+  { id:"support_block",name:"Support Services Block",         shortName:"Support Block",type:"store",
+    aliases:["support","procurement","estates","kitchen","staff kitchen","tea room","lecturer office"],
+    lat:0.32727, lng:32.61537,
+    description:"Block housing procurement, estates, kitchen staff and lecturer offices.",
+    offices:["Procurement Office","Kitchen / Staff Kitchen","Estates Office","Tea Office","Lecturer's Office 1"] },
+
+  /* ── SatCom BLOCK 1 ─────────────────────────────────────── */
+  { id:"satcom1",      name:"SatCom Block 1",                shortName:"SatCom 1",   type:"academic",
+    aliases:["satellite","satcom","HOD ICT","ICT department","AR office","academic registrar","staff room","management office"],
+    lat:0.32744, lng:32.61524,
+    description:"Satellite Communications Block 1 — departmental offices for ICT and Management.",
+    offices:["AR's Office","Staff Room","Secretary Admin Office (ICT)","HOD ICT","Secretary Management Office","HOD Management","Lecturer's Office 3"] },
+
+  /* ── SatCom BLOCK 2 ─────────────────────────────────────── */
+  { id:"satcom2",      name:"SatCom Block 2",                shortName:"SatCom 2",   type:"academic",
+    aliases:["satellite 2","satcom 2","business development","BDC","lecturer offices"],
+    lat:0.32756, lng:32.61529,
+    description:"Satellite Communications Block 2 — lecturer offices and business development.",
+    offices:["Lecturer's Office 4","Lecturer's Office 5","Business Development Centre"] },
+
+  /* ── SatCom BLOCK 3 ─────────────────────────────────────── */
+  { id:"satcom3",      name:"SatCom Block 3",                shortName:"SatCom 3",   type:"chapel",
+    aliases:["satellite 3","satcom 3","mosque","masjid","prayer room","islamic","seminar room satcom"],
+    lat:0.32768, lng:32.61534,
+    description:"Satellite Communications Block 3 — seminar room and mosque.",
+    offices:["Seminar Room","Mosque"] },
+
+  /* ── GUILD OFFICE / SACCO / CANTEEN ──────────────────────── */
+  { id:"guild_office", name:"Guild Office / SACCO / Canteen", shortName:"Guild / Canteen",type:"cafe",
+    aliases:["guild","student guild","sacco","savings","cooperative","canteen","tuck shop","student center","food","snacks","notice board","guild president"],
+    lat:0.32772, lng:32.61380,
+    description:"Student Guild offices, SACCO savings cooperative and student canteen — all under one roof.",
+    offices:["Guild President's Office","Guild Secretary Office","SACCO Office","Student Notice Board","Canteen / Dining Area"] },
+
+  /* ── TRAINING HALL ───────────────────────────────────────── */
+  { id:"training_hall",name:"Training Hall",                  shortName:"Training Hall",type:"hall",
+    aliases:["hall","training","conference","workshop","graduation hall","seminar hall","main hall","events hall","assembly"],
+    lat:0.32835, lng:32.61398,
+    description:"Main training hall used for large workshops, seminars, graduation and institutional events.",
+    offices:["Main Hall (Seating Area)","Stage / Podium","AV Control Room","VIP Waiting Room"] },
+
+
+  /* ── AUDITORIUM ──────────────────────────────────────────────── */
+  { id:"auditorium",   name:"Auditorium",                      shortName:"Auditorium",  type:"hall",
+    aliases:["graduation","ceremony","audi","events","orientation","performance","theatre","theater","big hall"],
+    lat:0.32965, lng:32.61438,
+    description:"UIICT main auditorium for graduation ceremonies, orientation, institutional events and performances.",
+    offices:["Events Coordinator Office","Stage & AV Control Room","VIP Waiting Room","Changing Rooms","Sound & Lighting Booth"] },
+
+  /* ── STUDENTS HOSTEL ─────────────────────────────────────── */
+  { id:"hostel",       name:"Students Hostel",                shortName:"Hostel",      type:"hostel",
+    aliases:["hostel","dorm","dormitory","accommodation","students residence","warden","boarding","room","sick bay","first aid"],
+    lat:0.32855, lng:32.61435,
+    description:"On-campus hostel accommodation for UIICT students.",
+    offices:["Warden's Office","Laundry Room","Games Room","Sick Bay / First Aid"] },
+
+  /* ── COMMON ROOM ─────────────────────────────────────────── */
+  { id:"common_room",  name:"Common Room",                    shortName:"Common Room", type:"staff",
+    aliases:["lounge","TV room","relax","chill","recreation","common area","student lounge","lockers"],
+    lat:0.32857, lng:32.61410,
+    description:"Student common room — lounge area for relaxation, TV viewing and informal gatherings.",
+    offices:["Lounge / TV Area","Notice Board","Student Locker Area"] },
+
+  /* ── ROAD CORNERS & JUNCTIONS (navigation waypoints) ────── */
+  { id:"corner_n",   name:"Central junction2",    shortName:"Main Block N junction",  type:"landmark",
+    aliases:["north junction","junction north","road junction"],
+    lat:0.32789, lng:32.61465,
+    description:"Corner near Main Block north side — connects central junction1 to inner campus road network.", offices:[] },
+  { id:"road_corner_east", name:"Playground East Corner", shortName:"Playground E Corner",   type:"landmark",
+    aliases:["east corner","road east","playground corner"],
+    lat:0.32860, lng:32.61493,
+    description:"East road corner near the sports playground — junction on the route between north junction and south-central junction1.", offices:[] },
+ 
+  { id:"corner_se",  name:"SatCom South-East Corner", shortName:"SatCom SE Corner",       type:"landmark",
+    aliases:["SE corner","satcom corner","south east"],
+    lat:0.32769, lng:32.61515,
+    description:"South-east path corner near the SatCom blocks back area.", offices:[] },
+
+  /* ── INTERNAL JUNCTIONS ──────────────────────────────────── */
+  { id:"junction_mid_w",   name:"Training Hall Junction",  shortName:"Training Hall Jct",      type:"landmark",
+    aliases:["mid west junction","west junction","training junction"],
+    lat:0.32788, lng:32.61374,
+    description:"Junction near Training Hall — connects west perimeter road between guild office and cafeteria.", offices:[] },
+  { id:"junction_south_c", name:"Hub & Cafeteria Junction",  shortName:"Hub & Cafeteria Jct", type:"landmark",
+    aliases:["south junction","cafeteria junction","hub junction","south central"],
+    lat:0.32895, lng:32.61409,
+    description:"South-central campus junction near Innovation Hub and Cafeteria — links Staff Quarters, Common Room, Innovation Hub and Auditorium.", offices:[] },
+  { id:"admin_roundabout", name:"Admin Block Roundabout",   shortName:"Admin Roundabout",  type:"landmark",
+    aliases:["roundabout","rotary","admin junction","small gate junction"],
+    lat:0.32730, lng:32.61514,
+    description:"Internal roundabout at the midpoint of the Small Gate road — key junction connecting Admin Block, Support Services and SatCom spurs.", offices:[] },
+
+  /* ── MAIN BLOCK DUAL ENTRIES ─────────────────────────────── */
+  { id:"main_block_north", name:"Main Block North Entrance", shortName:"Main Block N Entry", type:"landmark",
+    aliases:["main block entry north","main block front door","main block entrance"],
+    lat:0.32732, lng:32.61458,
+    description:"North entrance of the Main Block — accessible from the central junction1 side.", offices:[] },
+  { id:"main_block_south", name:"Main Block South Entrance", shortName:"Main Block S Entry", type:"landmark",
+    aliases:["main block entry south","main block back door","main block side entrance"],
+    lat:0.32724, lng:32.61488,
+    description:"South entrance of the Main Block — accessible from the East Parking side.", offices:[] },
+
+  /* ── TRAINING HALL DUAL ENTRIES ──────────────────────────── */
+  { id:"training_hall_north", name:"Training Hall North Entrance", shortName:"Training Hall N Entry", type:"landmark",
+    aliases:["hall front entrance","hall north entry","training hall front"],
+    lat:0.32835, lng:32.61383,
+    description:"North entrance of the Training Hall — main front entrance.", offices:[] },
+  { id:"training_hall_south", name:"Training Hall South Entrance", shortName:"Training Hall S Entry", type:"landmark",
+    aliases:["hall back entrance","hall south entry","training hall back"],
+    lat:0.32827, lng:32.61410,
+    description:"South entrance of the Training Hall — back/side entrance from junction.", offices:[] },
+
+  /* ── HUB PARKING ─────────────────────────────────────────── */
+  { id:"parking_hub", name:"Hub Parking Area", shortName:"Hub Parking", type:"parking",
+    aliases:["hub car park","innovation hub parking","parking hub","hub park"],
+    lat:0.32928, lng:32.61398,
+    description:"Parking area in front of the National Innovation ICT Hub.", offices:["Parking Attendant Bay"] },
+
+  /* ── STEPS: HUB TO PLAYGROUND ────────────────────────────── */
+  { id:"steps_hub_playground", name:"Steps – Hub to Playground", shortName:"Hub Steps", type:"landmark",
+    aliases:["stairs","hub stairs","playground stairs","steps","staircase"],
+    lat:0.32904, lng:32.61456,
+    description:"Steps connecting the Innovation Hub area to the play ground/ Playground.", offices:[] },
+
+  /* ── STAFF QUARTERS ──────────────────────────────────────── */
+  { id:"staff_quarters",name:"Staff Quarters",               shortName:"Staff Qtrs",  type:"hostel",
+    aliases:["staff houses","staff residence","staff accommodation","quarters","staff housing","lecturers quarters"],
+    lat:0.32895, lng:32.61378,
+    description:"On-campus residential quarters for UIICT staff.",
+    offices:["Caretaker's Office","Staff Residences"] },
+
+  /* ── STAFF QUARTERS 2 ────────────────────────────────────── */
+  { id:"staff_quarters2",name:"Staff Quarters 2",            shortName:"Staff Qtrs 2",type:"hostel",
+    aliases:["staff houses 2","staff residence 2","quarters 2","staff housing 2","second staff quarters"],
+    lat:0.32874, lng:32.61360,
+    description:"Additional on-campus residential quarters for UIICT staff.",
+    offices:["Caretaker's Office","Staff Residences"] },
+
+  /* ── CAFETERIA ───────────────────────────────────────────── */
+  { id:"cafeteria",    name:"Cafeteria / Dining Hall",        shortName:"Cafeteria",   type:"cafe",
+    aliases:["dining","dining hall","restaurant","food","eat","lunch","breakfast","dinner","kitchen","snack","feeding","mess hall"],
+    lat:0.32868, lng:32.61399,
+    description:"Student cafeteria serving breakfast, lunch and dinner daily.",
+    offices:["Dining Hall Manager","Kitchen","Serving Counter","Snack Bar"] },
+
+  /* ── CLINIC ──────────────────────────────────────────────── */
+ 
+
+  /* ── INNOVATION HUB ──────────────────────────────────────── */
+  { id:"innovation_hub",name:"National Innovation ICT Hub",   shortName:"Innovation Hub",type:"hub",
+    aliases:["hub","incubation","startup","co-working","coworking","EON reality","AVR studio","ministry ICT","innovation","tech hub","research","prototype","pitching"],
+    lat:0.32930, lng:32.61430,
+    description:"Uganda's National Innovation ICT Hub — start-up incubation and advanced technology research.",
+    offices:["Hub Manager's Office","Start-up Incubation Space","Co-working Space","Prototyping Lab","EON Reality / AVR Studio","Innovation & Research Office","Start-up Pitching Room","Ministry of ICT Office"] },
+
+  /* ── play ground───────────────────────────────────────── */
+  { id:"playground",   name:"playground",                  shortName:"playground",type:"sports",
+    aliases:["field","football","soccer","volleyball","sport","sports ground","pitch","ground","outdoor","play field"],
+    lat:0.32918, lng:32.61489,
+    description:"UIICT play ground— football, volleyball and general outdoor activities.",
+    offices:["Sports Director Office","Equipment Store","Male Changing Rooms","Female Changing Rooms"] }
+];
+
+
+/* ── PATH NETWORK ──────────────────────────────────────────────
+   Main roads are the backbone; buildings branch off as short spurs.
+   Main Block: south entry off East Parking, north entry before Central Jct.
+   Training Hall: south entry off Mid-West Jct road, north entry on footpath.
+   ────────────────────────────────────────────────────────────── */
+const PATHS = [
+  // ── ROAD A MAIN: Main Gate → Security → Central Jct → North Jct → Road-East-Corner → S-Central Jct
+  ["main_gate",           "security_main",       8],
+  ["security_main",       "main_block_north",    10],
+  
+   ["main_block_north",       "main_block",    5],
+
+  ["security_main",       "central_junction",    18],
+  ["central_junction",    "corner_n",            8],
+  ["corner_n",            "road_corner_east",    30],
+  ["road_corner_east",    "junction_south_c",    30],
+  // Official route avoids internal footpath shortcuts (very high cost)
+  ["junction_south_c",    "innovation_hub",      10],
+  ["innovation_hub",      "auditorium",          10],
+
+  // ── central junction1 → Main Block (direct spur)
+  ["central_junction",    "main_block_north",          10],
+  // ── East Parking → Main Block (direct spur)
+
+
+  // ── SECURITY short branch → West Parking → Reception
+  ["security_main",       "parking_west",        8],
+  ["parking_west",        "reception",           5],
+  ["security_main",       "reception",10],
+
+  // ── ROAD west branch: Central Jct → Guild Office → Mid-West Jct → Cafeteria
+  //   Training Hall sits alongside; south entry off Mid-West Jct road
+  ["central_junction",    "guild_office",        30],
+  ["guild_office",        "junction_mid_w",      25],
+  ["junction_mid_w",      "training_hall_north",       20],  // direct branch to Training Hall
+  ["training_hall_north",      "cafeteria",           10],
+  ["cafeteria",           "common_room",         10],
+  ["common_room",         "hostel",               5],
+
+  // ── FOOTPATH (semi-standard): Central Jct → Common Room → South-Central Jct
+  ["central_junction", "training_hall_south",     80],
+   ["training_hall_north","training_hall", 5],
+    ["training_hall_south","training_hall", 5],
+  ["central_junction","common_room",      85],
+  ["common_room",    "junction_south_c",  20],
+  ["junction_south_c",    "cafeteria",    20],
+  ["cafeteria",    "staff_quarters",      20],
+  ["cafeteria",    "staff_quarters2",     25],
+  ["staff_quarters",  "staff_quarters2",  10],
+
+  // ── ROAD C: Small Gate → East Parking → Admin Roundabout → SE Corner → North Jct (straight spine)
+  ["main_gate",           "small_gate",  20],
+  ["small_gate",          "parking_east",        10],
+  ["parking_east",        "admin_roundabout",    10],   // straight road spine continues
+  ["admin_roundabout",    "corner_se",           20],   // straight road to SE corner
+  ["corner_se",           "corner_n",            30],
+  // ── SPURS off Road C — each building branches independently from the road spine
+  ["parking_east",        "admin_block",         10],   // admin block spur off road near east parking
+  ["parking_east",        "printing_place",       8],   // printing place spur off east parking
+  ["admin_roundabout",    "support_block",       10],   // support block spur off roundabout
+  ["admin_roundabout",    "satcom1",             5],   // SatCom 1 spur off roundabout
+  ["admin_roundabout",    "satcom2",             10],   // SatCom 2 spur off roundabout
+  ["corner_se",           "satcom3",             8],   // SatCom 3 spur off SE corner
+    ["admin_roundabout",    "support_block",       15],  
+    ["admin_roundabout",    "admin_block",             10], 
+  ["corner_se",    "satcom1",             15],   
+  ["corner_se",    "satcom2",             12],
+ ["satcom1",    "satcom2",             5],
+  ["satcom3",    "satcom2",             5],
+  // ── PERIMETER / EXTRAS
+  ["road_corner_east",    "playground",          10],
+  ["main_gate",           "small_gate",          60],
+
+  // ── HUB PARKING spur
+  ["innovation_hub",      "parking_hub",         5],
+  ["junction_south_c",    "parking_hub",         20],
+
+  // ── STEPS: Hub to Playground
+  ["innovation_hub",      "steps_hub_playground", 10],
+  ["steps_hub_playground","playground",           10],
+
+  // ── MAIN BLOCK dual entries
+  ["central_junction",    "main_block_north",    15],
+  ["main_block_north",    "main_block",          5],
+  ["parking_east",        "main_block_south",    10],
+  ["main_block_south",    "main_block",          5],
+   ["main_block_south",    "printing_place",          10],
+
+  // ── TRAINING HALL dual entries
+  ["junction_mid_w",      "training_hall_north", 25],
+  ["training_hall_north", "training_hall",  5],
+ ];
+
+/* ════════════════════ END EDITABLE DATA ════════════════════ */
+
+/* ── OFFICIAL ROUTE NETWORK ────────────────────────────────────
+   Official routes follow main campus roads (Road A → Road C) even
+   if longer — no cutting across footpaths or campus shortcuts.
+   ────────────────────────────────────────────────────────────── */
+const VEHICLE_PATHS = [
+  ["main_gate",           "security_main",       8],
+  ["security_main",       "central_junction",    18],
+  
+  ["central_junction",    "corner_n",            10],
+  ["corner_n",            "road_corner_east",    50],
+  ["road_corner_east",    "junction_south_c",    30],
+
+    ["main_block_north",        "security_main",          10],
+     ["main_block",        "main_block_north",          5],
+     ["main_block_north",  "central_junction",          20],
+  ["parking_east",        "main_block_south",    10],
+  ["security_main",       "parking_west",        10],
+  ["parking_west",        "reception",           10],
+
+  ["central_junction",    "guild_office",        30],
+  ["guild_office",        "junction_mid_w",      25],
+   ["junction_mid_w",    "training_hall_north",      25],
+   ["training_hall_north", "training_hall",       5],
+   ["common_room",    "junction_south_c",  20],  
+
+  // ── ROAD C: Small Gate → East Parking → Admin Roundabout → SE Corner → North Jct (straight spine)
+  ["small_gate",          "parking_east",        10],    
+  ["parking_east",        "admin_roundabout",    10],
+  ["parking_east",        "admin_block",    10],
+  ["parking_east",        "printing_place",  8],
+   ["parking_east",    "support_block",       20],
+   ["parking_east",    "satcom1",       10],
+    ["parking_east",    "satcom2",       15],
+     ["parking_east",    "satcom3",       20],
+  ["admin_roundabout",    "corner_se",           20],
+  ["corner_se",           "corner_n",            30],
+    ["road_corner_east",    "playground",          10],
+
+  // ── Hub Parking
+  ["innovation_hub",      "parking_hub",         10],
+  ["junction_south_c",    "parking_hub",         20],
+    ["innovation_hub",      "auditorium",          5],
+  ["cafeteria",    "staff_quarters",      20],
+  ["cafeteria",    "staff_quarters2",     25],
+  ["staff_quarters",  "staff_quarters2",  10],
+
+ ["cafeteria",           "common_room",         10],
+  ["common_room",         "hostel",               5],
+  ];
+  
+
+
+const TYPE_CFG = {
+  academic:{ color:"#006b3f", icon:"🎓", label:"Academic / Classroom" },
+  admin:   { color:"#1d6b3f", icon:"🏢", label:"Administration" },
+  hub:     { color:"#7c2d96", icon:"💡", label:"Innovation Hub" },
+  library: { color:"#2563eb", icon:"📚", label:"Library" },
+  hostel:  { color:"#7c3aed", icon:"🛏",  label:"Hostel / Dormitory" },
+  gate:    { color:"#d97706", icon:"🚪", label:"Gate / Entrance" },
+  hall:    { color:"#dc2626", icon:"🎭", label:"Training Hall / Auditorium" },
+  sports:  { color:"#059669", icon:"⚽", label:"Sports Ground" },
+  lab:     { color:"#0891b2", icon:"🖥",  label:"Computer Laboratory" },
+  cafe:    { color:"#be185d", icon:"☕", label:"Cafeteria / Canteen" },
+  other:   { color:"#6b7280", icon:"🏥", label:"Health Clinic" },
+  workshop:{ color:"#0e7490", icon:"🔧", label:"Workshop / Training" },
+  security:{ color:"#b45309", icon:"🛡",  label:"Security Post" },
+  store:   { color:"#78716c", icon:"📦", label:"Store / Warehouse" },
+  chapel:  { color:"#7e22ce", icon:"⛪", label:"Chapel / Mosque" },
+  parking: { color:"#334155", icon:"🅿",  label:"Parking Area" },
+  staff:   { color:"#0f766e", icon:"👥", label:"Staff Block / Office" },
+  landmark:{ color:"#f59e0b", icon:"📍", label:"Campus Landmark" },
+};
+
+const ENTRY_IDS = new Set([]);
+const IDX=[];
+BUILDINGS.forEach(b=>{
+  if(ENTRY_IDS.has(b.id)) return; // navigation waypoints — not searchable
+  IDX.push({id:b.id,label:b.name,sub:b.description,icon:TYPE_CFG[b.type]?.icon||"🔵",type:'building',bldg:b,aliases:b.aliases||[]});
+  // Index flat offices
+  b.offices.forEach(o=>IDX.push({id:b.id+'__'+o,label:o,sub:'in '+b.name,icon:"🚪",type:'office',bldg:b,aliases:[]}));
+  // Index floor rooms
+  if(b.floors) b.floors.forEach(f=>f.rooms.forEach(r=>
+    IDX.push({id:b.id+'__'+r,label:r,sub:f.name+' · '+b.name,icon:"🚪",type:'office',bldg:b,aliases:[]})
+  ));
+});
+
+/* ── SEARCH with alias support + ranked results ─────────────────
+   Priority 1: exact label match (starts with query)
+   Priority 2: alias match (any alias contains query)  ← shown first
+   Priority 3: label / sub partial match
+   Within each tier, buildings come before offices.
+   ───────────────────────────────────────────────────────────── */
+function search(q){
+  if(!q.trim()) return IDX.slice(0,9).map(i=>({item:i,matchedAlias:null}));
+  const qL = q.toLowerCase().trim();
+
+  const seen = new Set();
+  const tier1=[],tier2=[],tier3=[];
+
+  IDX.forEach(i=>{
+    const labelL = i.label.toLowerCase();
+    const subL   = i.sub.toLowerCase();
+    // tier1: label starts with query
+    if(labelL.startsWith(qL)){
+      tier1.push({item:i,matchedAlias:null});
+      seen.add(i.id);
+      return;
+    }
+    // tier2: any alias contains the query
+    const hitAlias = (i.aliases||[]).find(a=>a.toLowerCase().includes(qL));
+    if(hitAlias){
+      tier2.push({item:i,matchedAlias:hitAlias});
+      seen.add(i.id);
+      return;
+    }
+    // tier3: label or sub contains query
+    if(labelL.includes(qL)||subL.includes(qL)){
+      tier3.push({item:i,matchedAlias:null});
+      seen.add(i.id);
+    }
+  });
+
+  // Within each tier: buildings before offices
+  const rank = arr=>[
+    ...arr.filter(x=>x.item.type==='building'),
+    ...arr.filter(x=>x.item.type!=='building')
+  ];
+
+  return [...rank(tier1),...rank(tier2),...rank(tier3)].slice(0,10);
+}
+
+let map,userMark,routeLayer,bMarkers={};
+let sizeRotatedMap = function(){};  // defined properly inside initMap
+let userPos=null,selFrom=null,selTo=null,lastBldg=null;
+
+/* ── MARQUEE ── */
+function buildMarquee(){
+  // Only include types that actually appear in BUILDINGS data
+  const usedTypes = [...new Set(BUILDINGS.map(b => b.type))];
+  const ITEMS = [
+    // Building types — coloured square + emoji matching map polygons
+    ...usedTypes
+      .filter(t => TYPE_CFG[t])
+      .map(t => ({ kind:'building', color: TYPE_CFG[t].color, icon: TYPE_CFG[t].icon, label: TYPE_CFG[t].label })),
+    // Map extras
+    { kind:'line',   color:'#94a3b8', dash:true,  label:'Campus Path / Walkway' },
+    { kind:'line',   color:'#f5c800', dash:false,  label:'Port Bell Road' },
+    { kind:'line',   color:'#8B4513', dash:false,  label:'Walking Route' },
+    { kind:'dot',    color:'#006b3f', label:'Route Start' },
+    { kind:'dot',    color:'#d90429', label:'Destination Pin' },
+    { kind:'dot',    color:'#f97316', label:'Your GPS Location' },
+  ];
+  const all = [...ITEMS, ...ITEMS];
+  document.getElementById('mq-inner').innerHTML = all.map((it, i) => {
+    let symbol;
+    if (it.kind === 'building') {
+      // Coloured square with white emoji — mirrors the map polygon + icon
+      symbol = `<span style="display:inline-flex;align-items:center;justify-content:center;
+                  width:20px;height:20px;border-radius:3px;background:${it.color};
+                  font-size:0.7rem;flex-shrink:0;box-shadow:0 1px 3px rgba(0,0,0,0.35)">${it.icon}</span>`;
+    } else if (it.kind === 'line') {
+      // Short line segment preview
+      const dash = it.dash ? '4 3' : 'none';
+      symbol = `<svg width="26" height="10" style="flex-shrink:0"><line x1="0" y1="5" x2="26" y2="5"
+                  stroke="${it.color}" stroke-width="${it.dash?2:4}" stroke-dasharray="${dash}"
+                  stroke-linecap="round"/></svg>`;
+    } else {
+      // Filled circle dot
+      symbol = `<span class="mq-dot" style="background:${it.color}"></span>`;
+    }
+    const sep = (i === ITEMS.length - 1 || i === all.length - 1)
+      ? `<span class="mq-sep">✦ UIICT · NAKAWA · KAMPALA ✦</span>` : '';
+    return `<span class="mq-item">${symbol}${it.label}</span>${sep}`;
+  }).join('');
+}
+
+/* ── MAP INIT ── */
+function initMap(){
+  document.title=CAMPUS.name;
+  buildMarquee();
+  appendActivitiesToMarquee();
+  map=L.map('map',{zoomControl:false,maxZoom:23}).setView(CAMPUS.center,CAMPUS.zoom);
+  L.control.zoom({position:'bottomright'}).addTo(map);
+  // ── TILE LAYERS (Google Maps-style imagery) ──────────────────────
+  const satellite = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { attribution: '© Group63 UICT 2026 ', maxZoom: 23, maxNativeZoom: 19, keepBuffer: 4 }
+  );
+  const streets = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    { attribution: '© Esri, HERE, Garmin, OpenStreetMap', maxZoom: 23, maxNativeZoom: 19 }
+  );
+  // Satellite labels overlay (shows road names on top of satellite)
+  const satLabels = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    { attribution: '', maxZoom: 23, maxNativeZoom: 19, opacity: 0.9 }
+  );
+
+  // Default: satellite + labels (like Google Maps hybrid)
+  satellite.addTo(map);
+  satLabels.addTo(map);
+
+  // Layer switcher control
+  L.control.layers(
+    { '🛰 Satellite': satellite, '🗺 Street Map': streets },
+    { 'Labels': satLabels },
+    { position: 'topright', collapsed: false }
+  ).addTo(map);
+
+  // ── DRAW ALL CONNECTING ROUTES ON LOAD ─────────────────────────
+  // Use instant straight dotted lines only — no external API calls on load
+  const campusPathLayer = L.layerGroup().addTo(map);
+  PATHS.forEach(([a, b]) => {
+    const ba = BUILDINGS.find(x => x.id === a);
+    const bb = BUILDINGS.find(x => x.id === b);
+    if (!ba || !bb) return;
+    L.polyline(
+      [[ba.lat, ba.lng], [bb.lat, bb.lng]],
+      { color: '#94a3b8', weight: 2, opacity: 0.45, dashArray: '5 5', lineJoin: 'round' }
+    ).addTo(campusPathLayer)
+     .bindTooltip(`${ba.shortName} → ${bb.shortName}`, { sticky: true, className: 'path-tip' });
+  });
+
+  // ── SVG symbols for each building type (no text labels) ─────────
+  const SVG_ICONS = {
+    gate:    `<path d="M12 2L4 7v13h5v-6h6v6h5V7z" fill="currentColor"/>`,
+    admin:   `<path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14H8v-4h4v4zm4 0h-2v-4H9v4H7v-4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v4zm2-8H6V5h12v4z" fill="currentColor"/>`,
+    hub:     `<path d="M12 2a7 7 0 0 0-7 7c0 2.6 1.4 4.9 3.5 6.2V17a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-1.8C17.6 13.9 19 11.6 19 9a7 7 0 0 0-7-7zm1 15h-2v-1h2v1zm2.1-3.3l-.6.3H9.5l-.6-.3A5 5 0 0 1 7 9a5 5 0 1 1 8.1 3.7z" fill="currentColor"/>`,
+    academic:`<path d="M12 3L1 9l4 2.18V15l7 4 7-4v-3.82L23 9zm6 8.99L12 15l-6-3.01V11.4L12 14l6-2.6v.59zM12 5.35L17.84 9 12 12.65 6.16 9z" fill="currentColor"/>`,
+    library: `<path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z" fill="currentColor"/>`,
+    hostel:  `<path d="M7 13c1.66 0 3-1.34 3-3S8.66 7 7 7s-3 1.34-3 3 1.34 3 3 3zm12-6h-8v7H3V5H1v15h2v-3h18v3h2v-9c0-2.21-1.79-4-4-4z" fill="currentColor"/>`,
+    hall:    `<path d="M18 3v2h-2V3H8v2H6V3H4v18h2v-2h2v2h8v-2h2v2h2V3h-2zM8 17H6v-2h2v2zm0-4H6v-2h2v2zm0-4H6V7h2v2zm10 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V7h2v2z" fill="currentColor"/>`,
+    sports:  `<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.93V15c0-.55.45-1 1-1s1 .45 1 1v1.93c-1.33.24-2.67.24-4 0zm-5.66-4.26A8.036 8.036 0 0 1 4 12c0-.34.02-.67.07-1h1.93C5.37 11.33 5 12.14 5 13h-1c-.22-.43-.52-.88-.66-1.33zM12 4c1.02 0 2 .17 2.93.46L13 7h-2L9.07 4.46C10 4.17 10.98 4 12 4zm4.24 14.28L15 17h-6l-1.24 1.28A8.01 8.01 0 0 1 4.72 15H7c0 .86.37 1.67 1 2.24V19a8 8 0 0 0 8 0v-1.76C16.63 16.67 17 15.86 17 15h2.28a8.01 8.01 0 0 1-3.04 3.28z" fill="currentColor"/>`,
+    lab:     `<path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z" fill="currentColor"/>`,
+    cafe:    `<path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z" fill="currentColor"/>`,
+    other:    `<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z" fill="currentColor"/>`,
+    workshop: `<path d="M22 9V7h-2V5c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2v-2h-2V9h2zm-4 10H4V5h14v14z" fill="currentColor"/>`,
+    security: `<path d="M12 2L4 6v6c0 5.25 3.5 10.15 8 11.35C16.5 22.15 20 17.25 20 12V6l-8-4zm0 10.99h6c-.46 3.06-2.6 5.7-6 6.93V13H6V8.26l6-2.67v7.4z" fill="currentColor"/>`,
+    store:    `<path d="M20 4H4v2l8 5 8-5V4zM4 20h16V9l-8 5-8-5v11z" fill="currentColor"/>`,
+    chapel:   `<path d="M11 2v3.27L12 6l1-.73V2h-2zm6 5H7l-4 6h18l-4-6zm1 8H6v4h2v-2h8v2h2v-4z" fill="currentColor"/>`,
+    parking:  `<path d="M13 3H6v18h4v-6h3c3.31 0 6-2.69 6-6s-2.69-6-6-6zm.2 8H10V7h3.2c1.1 0 2 .9 2 2s-.9 2-2 2z" fill="currentColor"/>`,
+    staff:    `<path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" fill="currentColor"/>`,
+    landmark: `<path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="currentColor"/>`
+  };
+
+  // ── BUILDING DIMENSIONS (half-widths in degrees) ──────────────
+  // 1m ≈ 0.000013° at Nakawa latitude. Sizes are approximate —
+  // update once you have real footprint coords from a site survey.
+  const BLDG_SIZE = {
+    gate:     { dLat: 0.000028, dLng: 0.000028 },
+    admin:    { dLat: 0.000044, dLng: 0.000036 },
+    hub:      { dLat: 0.000044, dLng: 0.000036 },
+    academic: { dLat: 0.000044, dLng: 0.000036 },
+    library:  { dLat: 0.000044, dLng: 0.000036 },
+    hostel:   { dLat: 0.000044, dLng: 0.000036 },
+    hall:     { dLat: 0.000051, dLng: 0.000040 },
+    sports:   { dLat: 0.00022, dLng: 0.00022 },  // square playground
+    lab:      { dLat: 0.000044, dLng: 0.000036 },
+    cafe:     { dLat: 0.000040, dLng: 0.000032 },
+    other:    { dLat: 0.000040, dLng: 0.000032 },
+    workshop: { dLat: 0.000044, dLng: 0.000036 },
+    security: { dLat: 0.000028, dLng: 0.000028 },
+    store:    { dLat: 0.000040, dLng: 0.000032 },
+    chapel:   { dLat: 0.000033, dLng: 0.000027 },
+    parking:  { dLat: 0.000051, dLng: 0.000060 },
+    staff:    { dLat: 0.000040, dLng: 0.000032 },
+    landmark: { dLat: 0.000024, dLng: 0.000024 },
+  };
+
+  function buildingRect(b) {
+    const sz = BLDG_SIZE[b.type] || BLDG_SIZE.other;
+    return [
+      [b.lat - sz.dLat, b.lng - sz.dLng],
+      [b.lat - sz.dLat, b.lng + sz.dLng],
+      [b.lat + sz.dLat, b.lng + sz.dLng],
+      [b.lat + sz.dLat, b.lng - sz.dLng],
+    ];
+  }
+
+  function makeSVGIcon(svgPath, color) {
+    return L.divIcon({
+      className: '',
+      html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+               width="27" height="27" style="display:block;transform:rotate(-90deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5))">
+               <rect width="24" height="24" rx="3" fill="${color}" opacity="0.0"/>
+               ${svgPath.replace('fill="currentColor"','fill="white"')}
+             </svg>`,
+      iconSize:   [40, 40],
+      iconAnchor: [13, 13],
+      popupAnchor:[0, -21]
+    });
+  }
+
+  // Draw each building as a filled rectangle + centred SVG icon
+  // Entry waypoints (_south / _north) are navigation-only — no block drawn
+  // Entry waypoints, road links, steps — navigation-only, shown as small markers only
+  const ENTRY_WAYPOINTS = new Set([
+    'main_block_north','main_block_south',
+    'training_hall_north','training_hall_south',
+    'steps_hub_playground',
+    'playground',
+  ]);
+  BUILDINGS.forEach(b => {
+    const cfg     = TYPE_CFG[b.type] || TYPE_CFG.other;
+    const svgPath = SVG_ICONS[b.type] || SVG_ICONS.other;
+    let poly = null;
+
+    // Non-entry buildings get a filled rectangle polygon
+    if (!ENTRY_WAYPOINTS.has(b.id)) {
+      const corners = buildingRect(b);
+      poly = L.polygon(corners, {
+        color:       'white',
+        weight:      1.8,
+        opacity:     0.9,
+        fillColor:   cfg.color,
+        fillOpacity: 0.72
+      }).addTo(map);
+      poly.bindPopup(makePopup(b));
+      poly.on('click', () => showBInfo(b));
+      bMarkers[b.id] = poly;
+    }
+
+    // Admin Roundabout gets a special white ⭕ emoji marker
+    if (b.id === 'admin_roundabout') {
+      const rabIcon = L.divIcon({
+        className: '',
+        html: `<div style="font-size:1.6rem;line-height:1;filter:drop-shadow(0 1px 3px rgba(0,0,0,0.6));transform:rotate(-90deg)">⭕</div>`,
+        iconSize:   [32, 32],
+        iconAnchor: [16, 16],
+      });
+      L.marker([b.lat, b.lng], { icon: rabIcon, interactive: false, zIndexOffset: 200 }).addTo(map);
+
+    // Playground — ball symbol only, clickable (no rectangle)
+    } else if (b.id === 'playground') {
+      const ballIcon = L.divIcon({
+        className: '',
+        html: `<div style="font-size:2.2rem;line-height:1;filter:drop-shadow(0 1px 4px rgba(0,0,0,0.7));transform:rotate(-90deg);cursor:pointer">⚽</div>`,
+        iconSize:   [38, 38],
+        iconAnchor: [19, 19],
+      });
+      const bm = L.marker([b.lat, b.lng], { icon: ballIcon, zIndexOffset: 300 }).addTo(map);
+      bm.bindPopup(makePopup(b));
+      bm.on('click', () => showBInfo(b));
+      bMarkers[b.id] = bm;
+
+    // Corner nodes — diamond shape with "C"
+    } else if (['junction_mid_w','corner_sw','corner_se','road_corner_east'].includes(b.id)) {
+      const cIcon = L.divIcon({
+        className: '',
+        html: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"
+                 style="transform:rotate(-90deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.55))">
+                 <polygon points="10,1 19,10 10,19 1,10" fill="#f59e0b" stroke="white" stroke-width="1.5"/>
+                 <text x="10" y="14" text-anchor="middle" font-family="sans-serif" font-size="8" font-weight="bold" fill="white">C</text>
+               </svg>`,
+        iconSize:   [20, 20],
+        iconAnchor: [10, 10],
+      });
+      L.marker([b.lat, b.lng], { icon: cIcon, interactive: false, zIndexOffset: 200 }).addTo(map);
+
+    // Junction nodes — hexagon shape with "J"
+    } else if (['corner_n','junction_south_c','central_junction'].includes(b.id)) {
+      const jIcon = L.divIcon({
+        className: '',
+        html: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"
+                 style="transform:rotate(-90deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.55))">
+                 <polygon points="10,1 18,5.5 18,14.5 10,19 2,14.5 2,5.5" fill="#0ea5e9" stroke="white" stroke-width="1.5"/>
+                 <text x="10" y="14" text-anchor="middle" font-family="sans-serif" font-size="8" font-weight="bold" fill="white">J</text>
+               </svg>`,
+        iconSize:   [20, 20],
+        iconAnchor: [10, 10],
+      });
+      L.marker([b.lat, b.lng], { icon: jIcon, interactive: false, zIndexOffset: 200 }).addTo(map);
+
+    // Main Block & Training Hall dual entry markers
+    } else if (['main_block_north','main_block_south'].includes(b.id)) {
+      const side = b.id.includes('north') ? 'N' : 'S';
+      const color = side === 'N' ? '#0ea5e9' : '#f97316';
+      const ic = L.divIcon({
+        className: '',
+        html: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"
+                 style="transform:rotate(-90deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5))">
+                 <circle cx="8" cy="8" r="7" fill="${color}" stroke="white" stroke-width="1.5"/>
+                 <text x="8" y="11.5" text-anchor="middle" font-family="sans-serif" font-size="7" font-weight="bold" fill="white">${side}</text>
+               </svg>`,
+        iconSize: [16, 16],
+        iconAnchor: [8, 8],
+      });
+      L.marker([b.lat, b.lng], { icon: ic, interactive: false, zIndexOffset: 300 })
+        .addTo(map).bindTooltip(`Main Block ${side === 'N' ? 'North' : 'South'} Entry`, { sticky: true, className: 'path-tip' });
+
+    } else if (['training_hall_north','training_hall_south'].includes(b.id)) {
+      const side = b.id.includes('north') ? 'N' : 'S';
+      const color = side === 'N' ? '#0ea5e9' : '#f97316';
+      const ic = L.divIcon({
+        className: '',
+        html: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"
+                 style="transform:rotate(-90deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5))">
+                 <circle cx="8" cy="8" r="7" fill="${color}" stroke="white" stroke-width="1.5"/>
+                 <text x="8" y="11.5" text-anchor="middle" font-family="sans-serif" font-size="7" font-weight="bold" fill="white">${side}</text>
+               </svg>`,
+        iconSize: [16, 16],
+        iconAnchor: [8, 8],
+      });
+      L.marker([b.lat, b.lng], { icon: ic, interactive: false, zIndexOffset: 300 })
+        .addTo(map).bindTooltip(`Training Hall ${side === 'N' ? 'North' : 'South'} Entry`, { sticky: true, className: 'path-tip' });
+
+    // Steps marker
+    } else if (b.id === 'steps_hub_playground') {
+      const stepsIc = L.divIcon({
+        className: '',
+        html: `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"
+                 style="transform:rotate(-90deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5))">
+                 <rect width="18" height="18" rx="3" fill="#6366f1" stroke="white" stroke-width="1.2"/>
+                 <text x="9" y="13" text-anchor="middle" font-family="sans-serif" font-size="9" fill="white">≡</text>
+               </svg>`,
+        iconSize: [18, 18],
+        iconAnchor: [9, 9],
+      });
+      L.marker([b.lat, b.lng], { icon: stepsIc, interactive: false, zIndexOffset: 300 })
+        .addTo(map).bindTooltip('Steps – Hub to Playground', { sticky: true, className: 'path-tip' });
+
+    } else {
+      // Centred icon marker (non-interactive — click passes through to polygon)
+      L.marker([b.lat, b.lng], {
+        icon: makeSVGIcon(svgPath, cfg.color),
+        interactive: false,
+        zIndexOffset: 100
+      }).addTo(map);
+    }
+
+  });
+
+  // ── PORT BELL ROAD — highlighted in yellow so user can see it ──
+  // Road runs roughly W→E through Nakawa past UIICT campus
+  // Approximate centreline coords (update if road is slightly off)
+  // Port Bell Road runs NORTH–SOUTH on the WEST side of campus.
+  // Campus buildings are all EAST of the road.
+  // Road centreline at lng ~32.6142, lat 0.325 → 0.331
+  // Road runs E→W along the SOUTH edge of campus at ~lat 0.32685
+  const portBellRd = [
+  
+    [0.32704, 32.61340],  
+    [0.32696, 32.61410],
+    [0.32686, 32.61460],
+    [0.32676, 32.61480],
+    [0.32676, 32.61480],
+    [0.32666, 32.61510],
+    [0.32660, 32.61530]
+
+  ];
+  // Yellow highlight — road on the WEST
+  L.polyline(portBellRd, {
+    color: '#f5c800', weight: 8, opacity: 0.50,
+    lineJoin: 'round', lineCap: 'round'
+  }).addTo(map).bindTooltip('Port Bell Road (New)', {permanent:false, sticky:true});
+  // White dashed centre line
+  L.polyline(portBellRd, {
+    color: 'white', weight: 1.8, opacity: 0.65,
+    dashArray: '8 6', lineJoin: 'round'
+  }).addTo(map);
+
+  // ══════════════════════════════════════════════════════════════
+  // MAIN CAMPUS ROADS — thick bent polylines; buildings branch off them
+  // ══════════════════════════════════════════════════════════════
+  const ROAD_STYLE  = { color:'#b07d3a', weight:18, opacity:0.60, lineJoin:'round', lineCap:'round' };
+  const ROAD_CENTRE = { color:'white',   weight:3,  opacity:0.50, dashArray:'14 10', lineJoin:'round' };
+  const SPUR_STYLE  = { color:'#b07d3a', weight:10, opacity:0.55, lineJoin:'round', lineCap:'round' };
+  const FOOT_STYLE  = { color:'#7c6030', weight:8,  opacity:0.55, dashArray:'9 7',  lineJoin:'round', lineCap:'round' };
+
+  // ── ROAD A: Main Gate → Security → [Main Block N] → Central Jct → North Jct → Road-East-Corner → S-Central Jct
+  const roadA = [
+    [0.32697, 32.61439],  // Main Gate
+    [0.32753, 32.61454],  // central junction1
+    [0.32789, 32.61466],  // North Junction
+    [0.32856, 32.61495],  // Road Corner East
+    [0.32895, 32.61414],  // South central junction1
+    [0.32872, 32.61394],
+    [0.32882, 32.61361],
+  ];
+
+  // ── ROAD west branch: Central Jct → Guild Office → Mid-West Jct → Cafeteria
+  const roadWest = [
+    [0.32753, 32.61454],  // central junction1
+    [0.32775, 32.61384],  // Guild Office
+    [0.32787, 32.61374], 
+    [0.32820, 32.61378],  // Mid-West Junction
+    [0.32840, 32.61356],  // Cafeteria / Staff Quarters area
+    
+  ];
+
+  // ── ROAD C (straight spine): Small Gate → East Parking → Admin Roundabout → SE Corner → North Jct
+  const roadC = [
+    [0.32680, 32.61491],  // Small Gate
+    [0.32712, 32.61506],  // East Parking
+    [0.32740, 32.61508],  // Admin Roundabout (midpoint of road — SE Corner path corner)
+    [0.32769, 32.61515],  // SE Corner
+    [0.32789, 32.61468],  // North Junction
+    
+  ];
+
+  // Draw main roads
+  [roadA, roadWest, roadC].forEach(coords => {
+    L.polyline(coords, ROAD_STYLE).addTo(map);
+    L.polyline(coords, ROAD_CENTRE).addTo(map);
+  });
+
+  // ── FOOTPATH (semi-standard dashed): Central Jct → Training Hall N entry → Common Room → S-Central Jct
+  const footpath = [
+    [0.32753, 32.61454],  // central junction1
+    [0.32856, 32.61490],  // Road Corner East
+    [0.32895, 32.61410],  // South central
+  ];
+  L.polyline(footpath, FOOT_STYLE).addTo(map)
+    .bindTooltip('Campus Footpath', { sticky:true, className:'path-tip' });
+
+
+
+  // ── ENTRY POINT MARKERS — small arrows/dots, unobtrusive ─────
+  function entryMarker(lat, lng, label, side) {
+    const color = side === 'N' ? '#0ea5e9' : '#f97316';
+    const ic = L.divIcon({
+      className: '',
+      html: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"
+               style="transform:rotate(-90deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5))">
+               <circle cx="7" cy="7" r="6" fill="${color}" stroke="white" stroke-width="1.5"/>
+               <text x="7" y="10" text-anchor="middle" font-family="sans-serif" font-size="7" font-weight="bold" fill="white">${side}</text>
+             </svg>`,
+      iconSize:   [14, 14],
+      iconAnchor: [7, 7],
+    });
+    return L.marker([lat, lng], { icon: ic, interactive: false, zIndexOffset: 300 })
+      .addTo(map)
+      .bindTooltip(label, { sticky: true, className: 'path-tip' });
+  }
+  // Main Block entries
+
+
+  // ── MAIN GATE arrow pointer on the road ─────────────────────────
+  // A visible arrow marker at the gate position ON the road
+  const gateArrow = L.divIcon({
+    className:'',
+    html: `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+      <polygon points="2,16 30,2 22,16 30,30" fill="#d90429" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+    </svg>`,
+    iconSize:[32,32], iconAnchor:[16,28]
+  });
+  L.marker([0.32818, 32.61500],{icon:gateArrow,interactive:false}).addTo(map)
+    .bindTooltip('Main Gate — Port Bell Road', {permanent:false});
+
+  const tip=document.getElementById('map-tip');
+  tip.style.display='block';
+  setTimeout(()=>tip.style.display='none',4000);
+
+  /* ── 90° CLOCKWISE ROTATION ─────────────────────────────────────
+     Swap map w↔h before rotating so the element fills the wrap
+     area correctly without overflowing onto the sidebar.           */
+  const mapWrap = document.getElementById('map-wrap');
+  const mapEl   = map.getContainer();
+
+  sizeRotatedMap = function() {
+    const W = mapWrap.clientWidth;
+    const H = mapWrap.clientHeight;
+    if (!W || !H) return;
+    mapEl.style.width    = H + 'px';
+    mapEl.style.height   = W + 'px';
+    mapEl.style.position = 'absolute';
+    mapEl.style.left     = Math.round((W - H) / 2) + 'px';
+    mapEl.style.top      = Math.round((H - W) / 2) + 'px';
+    mapEl.style.transform       = 'rotate(90deg) scale(1.04)';
+    mapEl.style.transformOrigin = 'center center';
+    setTimeout(() => map.invalidateSize({animate:false}), 50);
+  };
+
+  sizeRotatedMap();
+  window.addEventListener('resize', sizeRotatedMap);
+
+  // Lift Leaflet controls OUT of the rotated element so they stay upright
+  const ctrlContainer = mapEl.querySelector('.leaflet-control-container');
+  if (ctrlContainer) {
+    ctrlContainer.style.position      = 'absolute';
+    ctrlContainer.style.inset         = '0';
+    ctrlContainer.style.zIndex        = '700';
+    ctrlContainer.style.pointerEvents = 'none';
+    ctrlContainer.querySelectorAll('.leaflet-control').forEach(c => {
+      c.style.pointerEvents = 'auto';
+    });
+    mapWrap.appendChild(ctrlContainer);
+  }
+
+  // Fix drag: for 90° CW the x-drag should pan vertically and y-drag horizontally
+  map.dragging._draggable.on('predrag', function () {
+    const d = this._newPos.subtract(this._startPos);
+    this._newPos = this._startPos.add(L.point(d.y, -d.x));
+  });
+
+  // Fix click hit-testing: un-rotate the mouse position before Leaflet processes it
+  const _origCP = map.mouseEventToContainerPoint.bind(map);
+  map.mouseEventToContainerPoint = function(e) {
+    const p = _origCP(e);
+    const s = this.getSize();
+    return L.point(s.x - p.y, p.x);
+  };
+}
+
+function makePopup(b){
+  return `<div class="pw-title">${b.name}</div>
+    <div class="pw-desc">${b.description}</div>`;
+}
+
+/* ── GEOLOCATION ── */
+function locateMe(){
+  const btn=document.getElementById('locate-btn'),st=document.getElementById('loc-status');
+  btn.disabled=true; btn.innerHTML='<div id="loc-pulse"></div> Detecting…';
+  if(!navigator.geolocation){st.textContent='❌ Geolocation not supported';st.className='err';btn.disabled=false;resetLB();return;}
+  navigator.geolocation.getCurrentPosition(pos=>{
+    userPos={lat:pos.coords.latitude,lng:pos.coords.longitude};
+    if(userMark)map.removeLayer(userMark);
+    const ic=L.divIcon({className:'',
+      html:`<div style="width:18px;height:18px;border-radius:50%;background:#f97316;
+        border:3px solid white;box-shadow:0 0 0 6px rgba(249,115,22,0.22)"></div>`,
+      iconSize:[25,25],iconAnchor:[9,9]});
+    userMark=L.marker([userPos.lat,userPos.lng],{icon:ic}).addTo(map).bindTooltip('📍 You are here');
+    map.setView([userPos.lat,userPos.lng],CAMPUS.zoom);
+    const near=nearBldg(userPos.lat,userPos.lng);
+    st.textContent=`✅ Located${near?' — nearest: '+near.name:''}`;st.className='ok';
+    btn.disabled=false;btn.innerHTML='<div id="loc-pulse" class="active"></div> Location Active';
+    if(near)toast('📍 Nearest: '+near.name);
+  },err=>{
+    st.textContent='❌ '+{1:'Permission denied.',2:'Position unavailable.',3:'Timed out.'}[err.code];
+    st.className='err';btn.disabled=false;resetLB();
+  },{enableHighAccuracy:true,timeout:12000});
+}
+function resetLB(){document.getElementById('locate-btn').innerHTML='<div id="loc-pulse"></div> Detect My Location on Campus';}
+function nearBldg(lat,lng){let d=Infinity,n=null;BUILDINGS.forEach(b=>{const dd=hav(lat,lng,b.lat,b.lng);if(dd<d){d=dd;n=b;}});return n;}
+function useMyLoc(f){if(!userPos){toast('⚠️ Detect your location first');return;}const n=nearBldg(userPos.lat,userPos.lng);if(n){document.getElementById(f+'-in').value=n.name;if(f==='from')selFrom=n;else selTo=n;}}
+
+/* ── FULL-SCREEN SEARCH OVERLAY ─────────────────────────────── */
+let _sovField = null; // 'from' | 'to'
+
+function openSearchOverlay(f) {
+  _sovField = f;
+  const ov = document.getElementById('search-overlay');
+  const pip = document.getElementById('sov-pip');
+  pip.className = 'sov-pip ' + f; // start=yellow, end=red
+  const inp = document.getElementById('sov-input');
+  // Pre-fill with current value
+  const cur = document.getElementById(f + '-in').value;
+  inp.value = cur;
+  document.getElementById('sov-clear').style.display = cur ? 'block' : 'none';
+  document.getElementById('search-hint').textContent = f === 'from' ? 'Where are you coming from?' : 'Where do you want to go?';
+  ov.classList.add('open');
+  setTimeout(() => inp.focus(), 80);
+  sovRender(search(cur));
+}
+
+function closeSearchOverlay() {
+  document.getElementById('search-overlay').classList.remove('open');
+  document.getElementById('sov-input').blur();
+  _sovField = null;
+}
+
+function sovBackdropClick(e) {
+  if (e.target === document.getElementById('search-overlay')) closeSearchOverlay();
+}
+
+function sovOnInput(val) {
+  document.getElementById('sov-clear').style.display = val ? 'block' : 'none';
+  sovRender(search(val));
+}
+
+function sovClearInput() {
+  const inp = document.getElementById('sov-input');
+  inp.value = '';
+  inp.focus();
+  document.getElementById('sov-clear').style.display = 'none';
+  sovRender(search(''));
+}
+
+function sovRender(results) {
+  const list = document.getElementById('search-list');
+  const q = document.getElementById('sov-input').value;
+  list.innerHTML = '';
+  if (!results.length) {
+    list.innerHTML = '<div style="padding:24px 18px;text-align:center;color:var(--muted);font-size:0.82rem">No results found</div>';
+    return;
+  }
+  results.forEach((entry) => {
+    // Normalise: handle both wrapped {item,matchedAlias} and raw IDX objects
+    const r = entry.item || entry;
+    const matchedAlias = entry.matchedAlias || null;
+    if(!r) return;
+    const cfg = TYPE_CFG[r.bldg ? r.bldg.type : ''] || {};
+    const bgColor = cfg.color ? cfg.color + '22' : '#f2f4f8';
+    const div = document.createElement('div');
+    div.className = 'sug-item';
+    const aliasBadge = matchedAlias
+      ? `<span class="si-alias">also: ${matchedAlias}</span>` : '';
+    div.innerHTML = `
+      <div class="si-icon" style="background:${bgColor}">${r.icon}</div>
+      <div class="si-body">
+        <div class="si-name">${hl(r.label, q)}</div>
+        <div class="si-sub">${r.sub}</div>
+        ${aliasBadge}
+      </div>
+      <span class="si-arrow">›</span>`;
+    div.addEventListener('click', () => sovPick(r.id, r.label));
+    list.appendChild(div);
+  });
+}
+
+function sovPick(id, label) {
+  if (!_sovField) return;
+  document.getElementById(_sovField + '-in').value = label;
+  const item = IDX.find(i => i.id === id);
+  if (item) {
+    if (_sovField === 'from') selFrom = item.bldg;
+    else { selTo = item.bldg; showBInfo(item.bldg); }
+  }
+  closeSearchOverlay();
+}
+
+function hl(t,q){if(!q)return t;return t.replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`,'gi'),'<mark style="background:#fef08a;border-radius:2px;padding:0 1px">$1</mark>');}
+function hideSug(f){}  // kept for compatibility — no-op now
+function clrInput(f){document.getElementById(f+'-in').value='';if(f==='from')selFrom=null;else selTo=null;}
+function pickSug(f,id,label){ sovPick(id,label); } // compat alias
+
+/* ── old onInput kept as no-op (inputs are now readonly) ── */
+function onInput(){}
+function swapFields(){
+  const fv=document.getElementById('from-in').value,tv=document.getElementById('to-in').value;
+  document.getElementById('from-in').value=tv;document.getElementById('to-in').value=fv;
+  const tmp=selFrom;selFrom=selTo;selTo=tmp;
+}
+
+/* ── BLDG INFO ── */
+// Safe office registry — avoids passing apostrophe strings through HTML onclick attributes
+const _officeRegistry = {};
+function _regOffice(bid, name) {
+  const key = bid + '|' + Object.keys(_officeRegistry).filter(k=>k.startsWith(bid+'|')).length;
+  _officeRegistry[key] = { bid, name };
+  return key;
+}
+function _clickOffice(key) {
+  const entry = _officeRegistry[key];
+  if (entry) goToOffice(entry.bid, entry.name);
+}
+
+function showBInfo(b){
+  // Clear previous office registry entries for this building to avoid growth
+  Object.keys(_officeRegistry).forEach(k=>{ if(k.startsWith(b.id+'|')) delete _officeRegistry[k]; });
+
+  lastBldg=b;
+  const cfg=TYPE_CFG[b.type]||TYPE_CFG.other;
+
+  // Name & type badge
+  document.getElementById('bi-name').textContent=cfg.icon+' '+b.name;
+  const badge=document.getElementById('bi-type-badge');
+  badge.textContent=cfg.label; badge.style.display='inline-flex';
+  badge.style.background=cfg.color+'22';
+  badge.style.color=cfg.color;
+  badge.style.borderColor=cfg.color+'55';
+
+  document.getElementById('bi-desc').textContent=b.description;
+
+  const floorsWrap=document.getElementById('bi-floors-wrap');
+  const officesEl=document.getElementById('bi-offices');
+
+  if(b.floors && b.floors.length){
+    // ── FLOOR TABS ──
+    floorsWrap.style.display='block';
+    officesEl.innerHTML='';
+    const tabsEl=document.getElementById('bi-floor-tabs');
+    const panelsEl=document.getElementById('bi-floor-panels');
+    tabsEl.innerHTML=b.floors.map((f,i)=>
+      `<div class="floor-tab${i===0?' active':''}" onclick="switchFloor(${i})">${f.name}</div>`
+    ).join('');
+    panelsEl.innerHTML=b.floors.map((f,i)=>
+      `<div class="floor-panel${i===0?' active':''}" id="fp-${i}">
+         <div class="floor-rooms">${f.rooms.map(r=>{
+           const key=_regOffice(b.id,r);
+           return `<span class="btag" onclick="_clickOffice('${key}')">${r}</span>`;
+         }).join('')}</div>
+       </div>`
+    ).join('');
+  } else {
+    // ── FLAT OFFICES ──
+    floorsWrap.style.display='none';
+    officesEl.innerHTML=b.offices.map(o=>{
+      const key=_regOffice(b.id,o);
+      return `<span class="btag" onclick="_clickOffice('${key}')">${o}</span>`;
+    }).join('');
+  }
+
+  showBInfoSection();
+  const m=bMarkers[b.id];
+  if(m){m.openPopup();map.panTo([b.lat,b.lng],{animate:true});}
+  saveRecent(b);
+}
+
+function switchFloor(idx){
+  document.querySelectorAll('.floor-tab').forEach((t,i)=>t.classList.toggle('active',i===idx));
+  document.querySelectorAll('.floor-panel').forEach((p,i)=>p.classList.toggle('active',i===idx));
+}
+function setDest(id){const b=BUILDINGS.find(x=>x.id===id);if(!b)return;document.getElementById('to-in').value=b.name;selTo=b;map.closePopup();toast('🎯 Destination: '+b.name);}
+function navToSelected(){if(lastBldg)setDest(lastBldg.id);}
+function goToOffice(bid,office){const b=BUILDINGS.find(x=>x.id===bid);if(!b)return;document.getElementById('to-in').value=`${office} (${b.name})`;selTo=b;navigate();}
+
+/* ── DIJKSTRA ── */
+function buildGraph(){
+  const g={};
+  BUILDINGS.forEach(b=>g[b.id]={});
+  const paths = travelMode === 'vehicle' ? VEHICLE_PATHS : PATHS;
+  paths.forEach(([a,b,d])=>{if(g[a])g[a][b]=d;if(g[b])g[b][a]=d;});
+  return g;
+}
+function dijkstra(g,s,e){
+  const dist={},prev={},vis=new Set();
+  Object.keys(g).forEach(n=>dist[n]=Infinity);dist[s]=0;const pq=[[0,s]];
+  while(pq.length){pq.sort((a,b)=>a[0]-b[0]);const[d,u]=pq.shift();if(vis.has(u))continue;vis.add(u);if(u===e)break;Object.entries(g[u]||{}).forEach(([v,w])=>{const nd=d+w;if(nd<dist[v]){dist[v]=nd;prev[v]=u;pq.push([nd,v]);}});}
+  if(!isFinite(dist[e]))return null;
+  const path=[];let c=e;while(c){path.unshift(c);c=prev[c];}return{path,distance:dist[e]};
+}
+
+/* ── NAVIGATE ── */
+/* ── TRAVEL MODE ─────────────────────────────────────────────── */
+let travelMode = 'foot'; // 'foot' | 'vehicle'
+
+function setTravelMode(mode) {
+  travelMode = mode;
+  document.getElementById('tm-foot').classList.toggle('active', mode === 'foot');
+  document.getElementById('tm-foot').classList.toggle('foot', true);
+  document.getElementById('tm-vehicle').classList.toggle('active', mode === 'vehicle');
+  document.getElementById('tm-vehicle').classList.toggle('vehicle', true);
+  // If a route is already drawn, re-render with new speed & style
+  if(document.getElementById('result-section').style.display !== 'none') {
+    navigate();
+  }
+}
+
+function resolveInput(val) {
+  // Try exact label match first
+  let item = IDX.find(x => x.label.toLowerCase() === val.toLowerCase());
+  if (item) return item.bldg;
+  // Try matching against "Office (Building)" format written by goToOffice
+  const parenMatch = val.match(/^(.+?)\s*\((.+)\)$/);
+  if (parenMatch) {
+    const officePart = parenMatch[1].trim().toLowerCase();
+    const bldgPart   = parenMatch[2].trim().toLowerCase();
+    item = IDX.find(x => x.label.toLowerCase() === officePart &&
+                         x.bldg && x.bldg.name.toLowerCase() === bldgPart);
+    if (item) return item.bldg;
+    // Also try building name only from paren
+    item = IDX.find(x => x.bldg && x.bldg.name.toLowerCase() === bldgPart);
+    if (item) return item.bldg;
+  }
+  // Partial match — take first result
+  const qL = val.toLowerCase();
+  item = IDX.find(x => x.label.toLowerCase().includes(qL) || (x.bldg && x.bldg.name.toLowerCase().includes(qL)));
+  return item ? item.bldg : null;
+}
+
+function navigate(){
+  if(!selFrom){const v=document.getElementById('from-in').value.trim();if(v)selFrom=resolveInput(v);}
+  if(!selTo){const v=document.getElementById('to-in').value.trim();if(v)selTo=resolveInput(v);}
+  const err=document.getElementById('err-msg');
+  err.style.display='none';document.getElementById('result-section').style.display='none';
+  if(!selFrom){err.textContent='⚠️ Please enter or select a starting point.';err.style.display='block';return;}
+  if(!selTo){err.textContent='⚠️ Please enter or select a destination.';err.style.display='block';return;}
+  if(selFrom.id===selTo.id){toast('ℹ️ You are already at '+selFrom.name);return;}
+
+  const g = buildGraph();
+  let result = dijkstra(g, selFrom.id, selTo.id);
+
+  // If official route can't reach destination, tell user to try footpaths
+  if(!result && travelMode === 'vehicle') {
+    err.textContent='⚠️ No official route to this location. Try switching to On Foot to see the nearest point';
+    err.style.display='block';
+    return;
+  }
+
+  if(!result){err.textContent='⚠️ No path found between these two locations.';err.style.display='block';return;}
+  drawRoute(result);
+  renderResult(result);
+  document.getElementById('clear-btn').style.display='block';
+}
+// Route layer group to hold all route elements
+let routeLayerGroup = null;
+
+function clearRouteLayer() {
+  if(routeLayerGroup){ map.removeLayer(routeLayerGroup); routeLayerGroup=null; }
+  if(routeLayer){ map.removeLayer(routeLayer); routeLayer=null; }
+}
+
+function drawRoute(r) {
+  clearRouteLayer();
+  routeLayerGroup = L.featureGroup().addTo(map);
+
+  // Start and end buildings — walk path to find first/last real building
+  const startB = r.path.map(id=>BUILDINGS.find(x=>x.id===id)).find(Boolean);
+  const endB   = r.path.map(id=>BUILDINGS.find(x=>x.id===id)).filter(Boolean).slice(-1)[0];
+  if(!startB || !endB) return;
+
+  // Draw the exact campus internal path: straight segments between each
+  // Dijkstra hop. OSRM is intentionally NOT used — it routes on public
+  // roads outside the campus, which caused the wrong roads to be highlighted.
+  const coords = r.path
+    .map(id => BUILDINGS.find(x=>x.id===id))
+    .filter(Boolean)
+    .map(b => [b.lat, b.lng]);
+
+  // Wide white glow underneath for contrast against the satellite map
+  L.polyline(coords,{color:'white',weight:12,opacity:0.3,lineJoin:'round',lineCap:'round'}).addTo(routeLayerGroup);
+  // Route line — brown for foot, blue for vehicle
+  const routeColor = travelMode === 'vehicle' ? '#92400e' : '#c0521a';
+  routeLayer = L.polyline(coords,{color:routeColor,weight:5,opacity:1,lineJoin:'round',lineCap:'round'});
+  routeLayer.addTo(routeLayerGroup);
+  // Animated dashes on top — yellow for foot, cyan for vehicle
+  const dashColor = travelMode === 'vehicle' ? '#fbbf24' : '#f5c800';
+  L.polyline(coords,{color:dashColor,weight:2,opacity:0.85,lineJoin:'round',lineCap:'round',dashArray:'8 10'}).addTo(routeLayerGroup);
+
+  // Start pin — green circle with white centre
+  const startIc = L.divIcon({className:'',
+    html:`<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26">
+      <circle cx="13" cy="13" r="12" fill="#006b3f" stroke="white" stroke-width="2"/>
+      <circle cx="13" cy="13" r="5" fill="white"/>
+    </svg>`,
+    iconSize:[30,30],iconAnchor:[13,13]});
+  L.marker([startB.lat,startB.lng],{icon:startIc,zIndexOffset:1000}).addTo(routeLayerGroup)
+    .bindTooltip('Start: '+startB.name,{permanent:false});
+
+  // End pin — red teardrop
+  const endIc = L.divIcon({className:'',
+    html:`<svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
+      <path d="M14 0C7.4 0 2 5.4 2 12c0 8 12 24 12 24S26 20 26 12C26 5.4 20.6 0 14 0z"
+        fill="#d90429" stroke="white" stroke-width="1.5"/>
+      <circle cx="14" cy="12" r="5" fill="white"/>
+    </svg>`,
+    iconSize:[35,43],iconAnchor:[14,36]});
+  L.marker([endB.lat,endB.lng],{icon:endIc,zIndexOffset:1000}).addTo(routeLayerGroup)
+    .bindTooltip('Destination: '+endB.name,{permanent:false});
+
+  // Fit map to route
+  if(routeLayer) map.fitBounds(routeLayer.getBounds(),{padding:[60,60]});
+  else if(routeLayerGroup.getLayers().length) map.fitBounds(routeLayerGroup.getBounds(),{padding:[60,60]});
+}
+function renderResult(r){
+  const tot=r.distance;
+  const isVehicle = travelMode === 'vehicle';
+  const speed = isVehicle ? CAMPUS.vehicleSpeedKmh : CAMPUS.walkingSpeedKmh;
+  const mins=Math.ceil((tot/1000)/speed*60);
+  document.getElementById('r-dist').textContent=tot>=1000?(tot/1000).toFixed(2)+' km':tot+' m';
+  document.getElementById('r-time').textContent=mins<1?'<1 min':mins+' min';
+  document.getElementById('r-time-label').textContent=isVehicle?'Route Time':'Walk Time';
+  document.getElementById('r-pts').textContent=r.path.filter(id=>BUILDINGS.find(x=>x.id===id)).length;
+  const activePaths = isVehicle ? VEHICLE_PATHS : PATHS;
+  document.getElementById('steps').innerHTML=r.path.map((id,i)=>{
+    const b=BUILDINGS.find(x=>x.id===id);
+    if(!b) return ''; // skip waypoint nodes that aren't in BUILDINGS
+    const cfg=TYPE_CFG[b.type]||TYPE_CFG.other,isS=i===0,isE=i===r.path.length-1;
+    let seg='';if(i<r.path.length-1){const nId=r.path[i+1],e=activePaths.find(p=>(p[0]===id&&p[1]===nId)||(p[1]===id&&p[0]===nId));if(e)seg=`<div class="seg">~${e[2]} m to next stop</div>`;}
+    return `<div class="step-row"><div class="step-num ${isS?'s':isE?'e':''}">${isS?'S':isE?'E':i}</div>
+      <div class="step-body"><strong>${cfg.icon} ${b.name}</strong>
+      <div style="font-size:0.7rem;color:#64748b">${b.description.slice(0,70)}…</div>${seg}</div></div>`;
+  }).join('');
+  showResultSection();
+}
+function clearAll(){
+  clearRouteLayer();
+  document.getElementById('result-section').style.display='none';
+  document.getElementById('result-section').style.display='none';
+  document.getElementById('clear-btn').style.display='none';
+  document.getElementById('err-msg').style.display='none';
+  map.closePopup();resetView();
+}
+
+function hav(a,b,c,d){const R=6371000,dL=(c-a)*Math.PI/180,dN=(d-b)*Math.PI/180,x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dN/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
+function resetView(){map.setView(CAMPUS.center,CAMPUS.zoom);}
+
+
+/* ── SECTION COLLAPSE ───────────────────────────────────────────── */
+function toggleSection(header) {
+  const body = header.nextElementSibling;
+  const isOpen = !header.classList.contains('collapsed');
+  header.classList.toggle('collapsed', isOpen);
+  body.classList.toggle('collapsed', isOpen);
+}
+
+/* ── SHOW RESULT SECTION ────────────────────────────────────────── */
+function showResultSection() {
+  const sec = document.getElementById('result-section');
+  sec.style.display = 'block';
+  // make sure section header is expanded
+  const hdr = sec.querySelector('.sec-header');
+  const bdy = sec.querySelector('.sec-body');
+  hdr.classList.remove('collapsed');
+  bdy.classList.remove('collapsed');
+  setTimeout(() => sec.scrollIntoView({behavior:'smooth', block:'nearest'}), 100);
+}
+
+/* ── SHOW BINFO SECTION ─────────────────────────────────────────── */
+function showBInfoSection() {
+  const sec = document.getElementById('binfo-section');
+  sec.style.display = 'block';
+  const hdr = sec.querySelector('.sec-header');
+  const bdy = sec.querySelector('.sec-body');
+  hdr.classList.remove('collapsed');
+  bdy.classList.remove('collapsed');
+  // Inject live activity banner if applicable
+  if (lastBldg) setTimeout(() => refreshBInfoActivity(lastBldg), 15);
+}
+
+/* ── RECENT PLACES (localStorage) ──────────────────────────── */
+const RECENT_KEY = 'uiict_recent_places';
+const RECENT_MAX = 6;
+
+function saveRecent(b) {
+  const cfg = TYPE_CFG[b.type] || TYPE_CFG.other;
+  let recent = getRecent();
+  // Remove if already exists (move to top)
+  recent = recent.filter(r => r.id !== b.id);
+  recent.unshift({ id: b.id, name: b.name, icon: cfg.icon, desc: b.description.slice(0, 55), ts: Date.now() });
+  if (recent.length > RECENT_MAX) recent = recent.slice(0, RECENT_MAX);
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(recent)); } catch(e) {}
+  renderRecent();
+}
+
+function getRecent() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch(e) { return []; }
+}
+
+function clearRecent() {
+  try { localStorage.removeItem(RECENT_KEY); } catch(e) {}
+  renderRecent();
+}
+
+function timeAgo(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60)  return 'just now';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+function renderRecent() {
+  const recent = getRecent();
+  const list = document.getElementById('recent-list');
+  const clearBtn = document.getElementById('clear-recent-btn');
+  if (!recent.length) {
+    list.innerHTML = '<div id="recent-empty">No places viewed yet — tap any building on the map.</div>';
+    clearBtn.style.display = 'none';
+    return;
+  }
+  clearBtn.style.display = 'inline';
+  list.innerHTML = recent.map(r => `
+    <div class="recent-item" onclick="jumpToRecent('${r.id}')">
+      <div class="recent-icon">${r.icon}</div>
+      <div class="recent-info">
+        <div class="recent-name">${r.name}</div>
+        <div class="recent-sub">${r.desc}…</div>
+      </div>
+      <div class="recent-time">${timeAgo(r.ts)}</div>
+    </div>`).join('');
+}
+
+function jumpToRecent(id) {
+  const b = BUILDINGS.find(x => x.id === id);
+  if (b) showBInfo(b);
+}
+
+/* ── CALIBRATION MODE ───────────────────────────────────────── */
+let calibActive = false;
+let calibLabelLayer = null;
+let calibClickHandler = null;
+
+function toggleCalib() {
+  calibActive = !calibActive;
+  const btn  = document.getElementById('calib-btn');
+  const box  = document.getElementById('coord-box');
+
+  if (calibActive) {
+    btn.style.background = '#f5c800';
+    btn.style.color      = '#0a0f1e';
+    box.style.display    = 'block';
+
+    // Draw a permanent label tooltip over every building
+    calibLabelLayer = L.layerGroup().addTo(map);
+    BUILDINGS.forEach(b => {
+      const cfg = TYPE_CFG[b.type] || TYPE_CFG.other;
+      L.marker([b.lat, b.lng], {
+        icon: L.divIcon({
+          className: '',
+          html: `<div style="
+            background:rgba(10,15,30,0.88);
+            color:#f5c800;
+            border:1.5px solid rgba(245,200,0,0.6);
+            border-radius:6px;
+            padding:3px 7px;
+            font-family:'Outfit',sans-serif;
+            font-size:0.62rem;
+            font-weight:600;
+            white-space:nowrap;
+            pointer-events:none;
+            transform:rotate(-90deg);
+            transform-origin:center center;
+            box-shadow:0 2px 8px rgba(0,0,0,0.5);
+          ">${cfg.icon} ${b.shortName}</div>`,
+          iconAnchor: [0, 0],
+        }),
+        interactive: false,
+        zIndexOffset: 500,
+      }).addTo(calibLabelLayer);
+    });
+
+    // Click → show & copy lat/lng
+    calibClickHandler = function(e) {
+      const lat = e.latlng.lat.toFixed(5);
+      const lng = e.latlng.lng.toFixed(5);
+      const txt = `lat:${lat}, lng:${lng}`;
+      box.textContent = `📌 ${txt}  (click to copy)`;
+      box.style.pointerEvents = 'auto';
+      box.style.cursor = 'pointer';
+      box.onclick = () => {
+        navigator.clipboard.writeText(txt).then(() => {
+          box.textContent = `✅ Copied: ${txt}`;
+          setTimeout(() => { box.textContent = `📌 ${txt}  (click to copy)`; }, 1800);
+        });
+      };
+    };
+    
+
+  } else {
+    btn.style.background = '#1e3a5f';
+    btn.style.color      = 'white';
+    box.style.display    = 'none';
+    box.style.pointerEvents = 'none';
+    if (calibLabelLayer) { map.removeLayer(calibLabelLayer); calibLabelLayer = null; }
+    
+  }
+}
+
+/* ── SIDEBAR TOGGLE ─────────────────────────────────────────── */
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const btn = document.getElementById('menu-toggle');
+  const isCollapsed = sidebar.classList.contains('collapsed');
+  sidebar.classList.toggle('collapsed', !isCollapsed);
+  btn.classList.toggle('open', isCollapsed);
+  // Re-size and invalidate map after sidebar animation completes (330ms transition)
+  setTimeout(() => {
+    if (map) { sizeRotatedMap(); map.invalidateSize({animate:false}); }
+  }, 340);
+}
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='Enter') navigate();
+  if(e.key==='Escape') closeHelp();
+});
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeSearchOverlay();
+});
+
+window.addEventListener('load', () => { initMap(); renderRecent(); });
+
+/* ── HELP MODAL ─────────────────────────────────────────────── */
+function openHelp() {
+  document.getElementById('help-overlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeHelp() {
+  document.getElementById('help-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+function overlayClose(e) {
+  if (e.target === document.getElementById('help-overlay')) closeHelp();
+}
+function switchTab(name) {
+  document.querySelectorAll('.htab').forEach((t,i) => {
+    const ids = ['how','strengths','weaknesses','quickref'];
+    t.classList.toggle('active', ids[i] === name);
+  });
+  document.querySelectorAll('.htab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
+}
+
+/* ══ SERVICE WORKER REGISTRATION ══════════════════════════════
+   Registers sw.js which enables:
+   • Offline use (cached HTML + map tiles)
+   • Home screen install prompt (PWA)
+   ══════════════════════════════════════════════════════════ */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => {
+        console.log('[App] Service worker registered. Scope:', reg.scope);
+
+        /* Notify user when a new version is available */
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing;
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              showToast('🔄 Update available — reload to get the latest version');
+            }
+          });
+        });
+      })
+      .catch(err => console.warn('[App] Service worker registration failed:', err));
+  });
+}
+
+/* ══ PWA INSTALL PROMPT ════════════════════════════════════════
+   Captures the beforeinstallprompt event and shows a friendly
+   install banner so students can add the app to their home screen.
+   ══════════════════════════════════════════════════════════ */
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+
+  /* Show install banner after 4 seconds if not already installed */
+  setTimeout(() => {
+    if (deferredInstallPrompt) showInstallBanner();
+  }, 4000);
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  hideInstallBanner();
+  showToast('✅ UIICT Navigator installed to your home screen!');
+});
+
+function showInstallBanner() {
+  let banner = document.getElementById('install-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'install-banner';
+    banner.innerHTML = `
+      <div style="
+        position:fixed;bottom:44px;left:50%;transform:translateX(-50%);
+        background:#0a0f1e;border:1.5px solid rgba(245,200,0,0.4);
+        border-radius:14px;padding:12px 16px;
+        display:flex;align-items:center;gap:12px;
+        box-shadow:0 8px 32px rgba(0,0,0,0.5);
+        z-index:8000;max-width:360px;width:calc(100vw - 32px);
+        animation:slideUp 0.35s cubic-bezier(0.34,1.56,0.64,1);
+        font-family:'Outfit',sans-serif;
+      ">
+        <div style="font-size:1.6rem;flex-shrink:0">📲</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:0.82rem;color:white;margin-bottom:2px">
+            Install UIICT Navigator
+          </div>
+          <div style="font-size:0.7rem;color:rgba(255,255,255,0.5)">
+            Add to home screen for offline use
+          </div>
+        </div>
+        <button onclick="triggerInstall()" style="
+          flex-shrink:0;background:#f5c800;border:none;border-radius:8px;
+          padding:7px 13px;font-family:'Space Grotesk',sans-serif;font-weight:700;
+          font-size:0.75rem;color:#0a0f1e;cursor:pointer;white-space:nowrap;
+        ">Install</button>
+        <button onclick="hideInstallBanner()" style="
+          background:none;border:none;color:rgba(255,255,255,0.35);
+          font-size:1rem;cursor:pointer;padding:2px 4px;flex-shrink:0;
+        ">✕</button>
+      </div>
+      <style>@keyframes slideUp{from{opacity:0;transform:translateX(-50%) translateY(20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}</style>
+    `;
+    document.body.appendChild(banner);
+  }
+  banner.style.display = 'block';
+}
+
+function hideInstallBanner() {
+  const banner = document.getElementById('install-banner');
+  if (banner) banner.style.display = 'none';
+}
+
+async function triggerInstall() {
+  if (!deferredInstallPrompt) return;
+  hideInstallBanner();
+  deferredInstallPrompt.prompt();
+  const { outcome } = await deferredInstallPrompt.userChoice;
+  console.log('[App] Install prompt outcome:', outcome);
+  deferredInstallPrompt = null;
+}
+/* ═══════════════════════════════════════════════════════════════
+   LIVE ACTIVITY SYSTEM  — Firebase Firestore (shared, real-time)
+   ── Admin password: UICT2026
+   ── Activities stored in Firestore, synced live to ALL users
+   ── Auto-expire: old docs cleaned when listener fires
+   ═══════════════════════════════════════════════════════════════ */
+
+const ADMIN_PASSWORD = 'UICT2026';
+let amUnlocked = false;
+let activityMarkers = {}; // buildingId → Leaflet marker layer
+let activityInterval = null;
+
+/* ── In-memory activity cache (updated by Firestore listener) ── */
+let _cachedActivities = [];
+
+/* Called by the Firebase module whenever Firestore changes */
+window._onActivitiesUpdate = function(live) {
+  _cachedActivities = live;
+  refreshActivityDisplay();
+};
+
+function getActivities()   { return _cachedActivities; }
+function purgeExpired()    { return _cachedActivities; } // Firestore listener handles expiry
+
+async function saveActivities(arr) {
+  // Not used directly — writes go through _fbSaveActivity
+}
+
+/* ── Open / close modal ── */
+function openActivityModal() {
+  purgeExpired();
+  renderAmCurrentList();
+  populateBuildingSelect();
+  document.getElementById('activity-overlay').classList.add('open');
+  // Reset auth state each open
+  amUnlocked = false;
+  document.getElementById('am-form-area').style.display   = 'none';
+  document.getElementById('am-auth-btns').style.display   = 'block';
+  document.getElementById('am-auth-step').style.display   = 'block';
+  document.getElementById('am-pw').value = '';
+  clearAmError();
+  // Pre-fill time as current + 1 hour
+  const now = new Date();
+  document.getElementById('am-start').value = now.toTimeString().slice(0,5);
+  const end = new Date(now.getTime() + 60*60*1000);
+  document.getElementById('am-end').value   = end.toTimeString().slice(0,5);
+}
+function closeActivityModal() {
+  document.getElementById('activity-overlay').classList.remove('open');
+}
+function activityOverlayClose(e) {
+  if (e.target === document.getElementById('activity-overlay')) closeActivityModal();
+}
+
+/* ── Password ── */
+function toggleAmPw() {
+  const inp = document.getElementById('am-pw');
+  const eye = document.getElementById('am-pw-eye');
+  if (inp.type === 'password') { inp.type = 'text'; eye.textContent = '🙈'; }
+  else { inp.type = 'password'; eye.textContent = '👁'; }
+}
+function clearAmError() {
+  document.querySelectorAll('#am-error').forEach(el => {
+    el.style.display = 'none'; el.textContent = '';
+  });
+}
+function showAmError(msg) {
+  document.querySelectorAll('#am-error').forEach(el => {
+    el.textContent = msg; el.style.display = 'block';
+  });
+}
+function verifyAmPassword() {
+  const pw = document.getElementById('am-pw').value.trim();
+  if (pw !== ADMIN_PASSWORD) {
+    showAmError('❌ Incorrect password. Admin access denied.');
+    document.getElementById('am-pw').style.borderColor = 'rgba(217,4,41,0.7)';
+    setTimeout(() => { document.getElementById('am-pw').style.borderColor = ''; }, 1500);
+    return;
+  }
+  amUnlocked = true;
+  document.getElementById('am-auth-step').style.display = 'none';
+  document.getElementById('am-auth-btns').style.display = 'none';
+  document.getElementById('am-form-area').style.display = 'flex';
+  clearAmError();
+}
+
+/* ── Build the building dropdown ── */
+function populateBuildingSelect() {
+  const sel = document.getElementById('am-building');
+  const skip = new Set(['main_block_north','main_block_south','training_hall_north','training_hall_south',
+    'steps_hub_playground','corner_n','corner_se','road_corner_east','junction_mid_w','junction_south_c',
+    'admin_roundabout','central_junction','main_gate','small_gate']);
+  sel.innerHTML = '<option value="">— Choose a building —</option>';
+  BUILDINGS.filter(b => !skip.has(b.id)).forEach(b => {
+    const opt = document.createElement('option');
+    opt.value = b.id;
+    opt.textContent = b.name;
+    sel.appendChild(opt);
+  });
+}
+
+/* ── Submit a new activity ── */
+async function submitActivity() {
+  const bid   = document.getElementById('am-building').value.trim();
+  const desc  = document.getElementById('am-desc').value.trim();
+  const start = document.getElementById('am-start').value;
+  const end   = document.getElementById('am-end').value;
+
+  if (!bid)  { showAmError('⚠️ Please select a building.'); return; }
+  if (!desc) { showAmError('⚠️ Please enter an activity description.'); return; }
+  if (!start || !end) { showAmError('⚠️ Please set both start and end times.'); return; }
+
+  // Convert HH:MM to today's timestamp
+  function todayTs(hhmm) {
+    const [h, m] = hhmm.split(':').map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  }
+  const startTs = todayTs(start);
+  let   endTs   = todayTs(end);
+  if (endTs <= startTs) endTs += 24 * 60 * 60 * 1000; // crosses midnight
+  if (endTs <= Date.now()) { showAmError('⚠️ End time is already in the past. Please set a future end time.'); return; }
+
+  if (!window._fbReady) {
+    showAmError('⚠️ Firebase not connected. Check your config.'); return;
+  }
+
+  const btn = document.querySelector('.am-submit');
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Posting…';
+  try {
+    await window._fbSaveActivity({ buildingId: bid, description: desc, startTs, endTs, start, end });
+    closeActivityModal();
+    const b = BUILDINGS.find(x => x.id === bid);
+    toast('📌 Activity posted live: ' + (b ? b.name : bid));
+  } catch(err) {
+    showAmError('❌ Failed to post: ' + err.message);
+    btn.disabled = false;
+    btn.innerHTML = '<span>📌</span> Post Live Activity';
+    console.error('[Firebase] submitActivity error:', err);
+  }
+}
+
+/* ── Clear all activities (admin only) ── */
+async function clearAllActivities() {
+  if (!window._fbReady) { toast('⚠️ Firebase not connected.'); return; }
+  try {
+    await window._fbClearAll();
+    closeActivityModal();
+    toast('🗑 All activities cleared for everyone.');
+  } catch(err) {
+    toast('❌ Clear failed: ' + err.message);
+  }
+}
+
+/* ── Refresh all visual indicators ── */
+function refreshActivityDisplay() {
+  const live = purgeExpired();
+
+  // Remove old activity markers
+  Object.values(activityMarkers).forEach(m => { try { map.removeLayer(m); } catch(e){} });
+  activityMarkers = {};
+
+  // Add pulsing red marker over each active building
+  live.forEach(a => {
+    const b = BUILDINGS.find(x => x.id === a.buildingId);
+    if (!b) return;
+
+    const actIc = L.divIcon({
+      className: '',
+      html: `<div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center">
+               <div style="position:absolute;inset:0;border-radius:50%;border:2.5px solid #d90429;
+                           animation:fabRing 1.8s ease-out infinite;opacity:0.7"></div>
+               <div style="width:16px;height:16px;border-radius:50%;background:#d90429;
+                           box-shadow:0 0 0 5px rgba(217,4,41,0.25);
+                           border:2.5px solid white;
+                           font-size:0;
+                           transform:rotate(-90deg)"></div>
+             </div>
+             <style>@keyframes fabRing{0%{opacity:.7;transform:scale(1)}100%{opacity:0;transform:scale(2)}}</style>`,
+      iconSize:   [36, 36],
+      iconAnchor: [18, 18],
+      popupAnchor:[0, -22]
+    });
+    const marker = L.marker([b.lat, b.lng], { icon: actIc, zIndexOffset: 2000 }).addTo(map);
+    marker.bindTooltip(`🔴 LIVE: ${a.description}`, { sticky: true, className: 'path-tip' });
+    marker.on('click', () => showBInfo(b));
+    activityMarkers[a.buildingId] = marker;
+  });
+
+  // Refresh marquee to include live activities
+  buildMarquee();
+  appendActivitiesToMarquee();
+
+  // If building info panel is open and matches an active building, refresh it
+  if (lastBldg) {
+    const stillOpen = document.getElementById('binfo-section').style.display !== 'none';
+    if (stillOpen) refreshBInfoActivity(lastBldg);
+  }
+}
+
+/* ── Inject activity banner into Building Info panel ── */
+function refreshBInfoActivity(b) {
+  // Remove any existing banner
+  const existing = document.getElementById('bi-activity-banner');
+  if (existing) existing.remove();
+
+  const live = purgeExpired();
+  const act = live.find(a => a.buildingId === b.id);
+  if (!act) return;
+
+  const banner = document.createElement('div');
+  banner.id = 'bi-activity-banner';
+  banner.className = 'live-activity-banner';
+  banner.innerHTML = `
+    <div class="lab-dot"></div>
+    <div class="lab-body">
+      <div class="lab-title">🔴 LIVE NOW</div>
+      <div class="lab-desc">${act.description}</div>
+      <div class="lab-time">⏰ ${act.start} – ${act.end}</div>
+    </div>`;
+
+  // Insert after description
+  const desc = document.getElementById('bi-desc');
+  if (desc && desc.parentNode) {
+    desc.parentNode.insertBefore(banner, desc.nextSibling);
+  }
+}
+
+/* ── Render the current activities list inside modal ── */
+function renderAmCurrentList() {
+  const live = purgeExpired();
+  const container = document.getElementById('am-curr-list');
+  if (!live.length) {
+    container.innerHTML = '<div class="am-none">No activities running right now</div>';
+    return;
+  }
+  container.innerHTML = live.map(a => {
+    const b = BUILDINGS.find(x => x.id === a.buildingId);
+    return `<div class="am-curr-item">
+      <div class="ac-bldg">🏛 ${b ? b.name : a.buildingId}</div>
+      <div>${a.description}</div>
+      <div class="ac-time">⏰ ${a.start} → ${a.end}</div>
+    </div>`;
+  }).join('');
+}
+
+/* ── Append live activities to marquee (called after buildMarquee) ── */
+function appendActivitiesToMarquee() {
+  const live = purgeExpired();
+  if (!live.length) return;
+  const inner = document.getElementById('mq-inner');
+  if (!inner) return;
+  const liveHtml = live.map(a => {
+    const b = BUILDINGS.find(x => x.id === a.buildingId);
+    return `<span class="mq-item" style="color:#ff6b81"><span class="mq-dot" style="background:#d90429;box-shadow:0 0 0 3px rgba(217,4,41,0.3);animation:pulse 1.5s infinite"></span>LIVE · ${b ? b.shortName : a.buildingId}: ${a.description} (${a.start}–${a.end})</span>`;
+  }).join('');
+  inner.innerHTML += liveHtml;
+}
+
+/* ── Periodic expiry check (backup — Firebase listener is the primary) ── */
+function startActivityWatcher() {
+  if (activityInterval) clearInterval(activityInterval);
+  activityInterval = setInterval(() => {
+    // Just re-render; _cachedActivities is already kept current by Firestore
+    refreshActivityDisplay();
+  }, 30000);
+}
+
+/* ── Initialise on page load ── */
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    refreshActivityDisplay(); // initial render (empty until Firebase responds)
+    startActivityWatcher();
+  }, 500);
+});
+
+</script>
+</body>
+</html>
