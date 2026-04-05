@@ -38,14 +38,14 @@
       "short_name": "Directions",
       "description": "Open the directions panel",
       "url": "./UIICT_Campus_Navigator.html#directions",
-      "icons": [{ "src": "icons/icon-96.png", "sizes": "96x96" }]
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "Find a Building",
       "short_name": "Buildings",
       "description": "Browse campus buildings",
       "url": "./UIICT_Campus_Navigator.html#buildings",
-      "icons": [{ "src": "icons/icon-96.png", "sizes": "96x96" }]
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }
