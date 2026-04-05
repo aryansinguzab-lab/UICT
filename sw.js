@@ -7,9 +7,9 @@
    ═══════════════════════════════════════════════════════════════ */
 
 const APP_VERSION   = 'v1.0.0';
-const SHELL_CACHE   = `uiict-shell-${APP_VERSION}`;
-const TILES_CACHE   = `uiict-tiles-${APP_VERSION}`;
-const RUNTIME_CACHE = `uiict-runtime-${APP_VERSION}`;
+const SHELL_CACHE   = `uict-shell-${APP_VERSION}`;
+const TILES_CACHE   = `uict-tiles-${APP_VERSION}`;
+const RUNTIME_CACHE = `uict-runtime-${APP_VERSION}`;
 
 /* Max number of tile images to keep cached (tiles can be large) */
 const TILE_CACHE_LIMIT = 500;
