@@ -16,7 +16,7 @@ const TILE_CACHE_LIMIT = 500;
 
 /* Resources to pre-cache on install — the app shell */
 const SHELL_ASSETS = [
-  './UIICT_Campus_Navigator.html',
+  './index.html',
   './manifest.json',
   /* Leaflet CSS & JS from CDN — cached on install so map works offline */
   'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
@@ -165,7 +165,7 @@ async function trimTileCache(cache) {
 function offlineFallback(request) {
   /* For navigation requests, try returning the cached HTML */
   if (request.destination === 'document') {
-    return caches.match('./UIICT_Campus_Navigator.html');
+    return caches.match('./index.html');
   }
   /* For tiles, return a transparent 1×1 PNG */
   if (isTileRequest(new URL(request.url))) {
@@ -197,7 +197,7 @@ function isTileRequest(url) {
 
 function isShellAsset(url) {
   return (
-    SHELL_ASSETS.some(asset => url.href === asset || url.pathname.endsWith('UIICT_Campus_Navigator.html')) ||
+    SHELL_ASSETS.some(asset => url.href === asset || url.pathname.endsWith('index.html')) ||
     url.hostname.includes('fonts.googleapis.com')  ||
     url.hostname.includes('fonts.gstatic.com')     ||
     url.hostname.includes('cdnjs.cloudflare.com')
@@ -213,4 +213,3 @@ self.addEventListener('message', event => {
     event.ports[0].postMessage({ version: APP_VERSION });
   }
 });
-
