@@ -1,6 +1,6 @@
 {
-  "name": "UIICT Campus Navigator",
-  "short_name": "UIICT Nav",
+  "name": "UICT Campus Navigator",
+  "short_name": "UICT Nav",
   "description": "Interactive campus map and wayfinding for Uganda Institute of Information and Communications Technology, Nakawa, Kampala.",
   "start_url": "./index.html",
   "display": "standalone",
