@@ -1,0 +1,51 @@
+{
+  "name": "UIICT Campus Navigator",
+  "short_name": "UIICT Nav",
+  "description": "Interactive campus map and wayfinding for Uganda Institute of Information and Communications Technology, Nakawa, Kampala.",
+  "start_url": "./UIICT_Campus_Navigator.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0f1e",
+  "theme_color": "#0a0f1e",
+  "lang": "en",
+  "scope": "./",
+  "categories": ["navigation", "education", "utilities"],
+  "icons": [
+    
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+   
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "label": "UIICT Campus Map",
+      "form_factor": "narrow"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Get Directions",
+      "short_name": "Directions",
+      "description": "Open the directions panel",
+      "url": "./UIICT_Campus_Navigator.html#directions",
+      "icons": [{ "src": "icons/icon-96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "Find a Building",
+      "short_name": "Buildings",
+      "description": "Browse campus buildings",
+      "url": "./UIICT_Campus_Navigator.html#buildings",
+      "icons": [{ "src": "icons/icon-96.png", "sizes": "96x96" }]
+    }
+  ]
+}
